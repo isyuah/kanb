@@ -1,6 +1,6 @@
 # Kanb — 团队任务看板
 
-小团队内部使用的任务看板（BS 架构）。Go 后端 + SQLite 存储 + SSE 实时同步，React + Ant Design 前端。免登录，仅需输入名字标识操作者；多人可认领同一任务，各自维护进度记录。
+小团队内部使用的任务看板（BS 架构）。Go 后端 + SQLite 存储 + SSE 实时同步，React + Ant Design 前端。多人可认领同一任务，各自维护进度记录。
 
 ## 功能
 
@@ -8,10 +8,13 @@
 - 任务详情抽屉：内容、截止日期、标签、认领人、依赖、进度记录（1:N 可增改删）、操作时间线
 - 多人认领同一任务，每人独立的进度百分比 + 说明
 - 依赖关系：防成环校验，未完成依赖阻塞提示；依赖总览图（React Flow）
-- 搜索过滤、逾期高亮、归档/恢复、团队动态、SSE 多端实时同步
-- 操作自动记录「谁 + 何时」，无权限控制，仅留痕
-- **MCP 支持**：AI 客户端（Claude Desktop / Codex / Cursor）可直接安排任务、认领、报进度、设依赖，见 `docs/mcp.md`
-- 数据格式与接口文档见 `docs/api.md`（供 AI / 外部脚本调用）
+- 用户体系与 RBAC：注册 / 登录，三角色（管理员 / 成员 / 访客），首个注册用户自动为管理员
+- 公开度模式（系统设置）：不公开（需登录）/ 公开只读 / 完全公开（免登录可写，回到极简体验）
+- 搜索过滤、逾期高亮、归档 / 恢复、回收站（软删可恢复）、日历视图、个人中心
+- 团队动态、SSE 多端实时同步；操作自动留痕（谁 + 何时）
+- 数据库满足 3NF：用户实体化、任务-标签关联表、外键真实启用、审计快照设计，见 `docs/db-design.md`
+- **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖，见 `docs/mcp.md`
+- 接口文档见 `docs/api.md` 与 `docs/api-v2-contract.md`
 
 ## 快速开始（开发）
 
@@ -25,6 +28,8 @@ cd web
 npm install
 npm run dev        # http://localhost:5173 （代理 /api 到 8400）
 ```
+
+首次启动后打开页面注册第一个账号，即为管理员。
 
 ## 生产部署
 
@@ -40,17 +45,21 @@ cd ../server && go build -o kanb-server.exe .
 ## 技术栈
 
 - 后端：Go 标准库 net/http、modernc.org/sqlite（纯 Go）、SSE
-- 前端：Vite + React 19 + TypeScript、Ant Design 6、zustand、@dnd-kit（拖拽）、@xyflow/react（依赖图）、motion（动画）
-- 存储：SQLite 单文件；localStorage 仅缓存登录名与离线展示
+- 前端：Vite + React 19 + TypeScript、Ant Design 6、zustand、@dnd-kit（拖拽）、@xyflow/react（依赖图）、dayjs + AntD Calendar（日历视图）、motion（动画）
+- 存储：SQLite 单文件；localStorage 缓存登录态与离线展示
 
 ## 接口速览
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | /api/tasks | 任务列表（含认领/进度/依赖） |
+| POST | /api/auth/register · /login · /logout | 注册 / 登录 / 登出 |
+| GET | /api/users · POST · PATCH /{id} | 用户管理（admin） |
+| GET | /api/settings · PATCH | 系统设置 / 公开度（PATCH 为 admin） |
+| GET | /api/tasks | 任务列表（含认领/进度/依赖/标签） |
 | POST | /api/tasks | 创建任务 |
 | PATCH | /api/tasks/{id} | 更新任务（标题/内容/状态/截止/标签/归档） |
-| DELETE | /api/tasks/{id} | 删除任务 |
+| DELETE | /api/tasks/{id} | 软删任务（进回收站） |
+| GET | /api/trash · POST /restore · DELETE | 回收站：列表 / 恢复 / 彻底删除 |
 | POST/DELETE | /api/tasks/{id}/claim | 认领 / 取消认领 |
 | POST | /api/tasks/{id}/progress | 添加进度记录 |
 | PUT/DELETE | /api/progress/{pid} | 修改/删除自己的进度记录 |
@@ -58,4 +67,4 @@ cd ../server && go build -o kanb-server.exe .
 | GET | /api/activities | 操作动态 |
 | GET | /api/events | SSE 变更推送 |
 
-请求头 `X-Author: <名字>`（前端自动 URL 编码中文）标识操作者。
+鉴权：登录后请求携带 `Authorization: Bearer <token>`（详见 `docs/api-v2-contract.md`）。

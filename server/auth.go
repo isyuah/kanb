@@ -235,6 +235,9 @@ func (s *Store) Register(username, password, displayName string) (*User, bool, e
 	if username == "" || password == "" {
 		return nil, false, errors.New("用户名与密码不能为空")
 	}
+	if len(password) < 6 {
+		return nil, false, errors.New("密码长度至少 6 位")
+	}
 	if username == AnonUsername {
 		return nil, false, errors.New("该用户名已被占用")
 	}
@@ -375,6 +378,9 @@ func (s *Store) UpdateSelf(userID, displayName, newPassword string) (*User, erro
 	defer tx.Rollback()
 	hash := u.PasswordHash
 	if newPassword != "" {
+		if len(newPassword) < 6 {
+			return nil, errors.New("密码长度至少 6 位")
+		}
 		h, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, err

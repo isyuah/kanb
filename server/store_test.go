@@ -343,3 +343,18 @@ func TestStatsAggregation(t *testing.T) {
 		t.Fatalf("归档后统计错误: total=%d archived=%d", st2.TaskTotal, st2.Archived)
 	}
 }
+
+// TestPasswordMinLength 密码强度契约：注册/改密密码少于 6 位被拒。
+func TestPasswordMinLength(t *testing.T) {
+	s := newTestStore(t)
+	if _, _, err := s.Register("short", "123", "短"); err == nil {
+		t.Fatal("注册短密码应被拒")
+	}
+	u := reg(t, s, "alice") // alice 密码 alicepass1
+	if _, err := s.UpdateSelf(u.ID, "Alice", "123"); err == nil {
+		t.Fatal("改密短密码应被拒")
+	}
+	if _, err := s.UpdateSelf(u.ID, "Alice", "abcdef"); err != nil {
+		t.Fatalf("改密 ≥6 位应通过: %v", err)
+	}
+}

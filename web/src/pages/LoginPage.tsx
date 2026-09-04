@@ -78,7 +78,11 @@ export default function LoginForm() {
         )}
         <Form.Item
           name="password"
-          rules={[{ required: true, message: '请输入密码' }]}
+          rules={
+            mode === 'register'
+              ? [{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少 6 位' }]
+              : [{ required: true, message: '请输入密码' }]
+          }
           style={{ marginBottom: 8 }}
         >
           <Input.Password

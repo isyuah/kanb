@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { App, Button, Empty, List, Modal, Popconfirm, Space, Tag, Typography } from 'antd'
 import { ClockCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { api } from '../api'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
-import { api } from '../api'
 import type { Task } from '../types'
 import { fmtDate } from '../lib'
 
@@ -11,7 +11,7 @@ export default function ArchiveModal() {
   const open = useUI((s) => s.archiveOpen)
   const setOpen = useUI((s) => s.setArchiveOpen)
   const openTask = useUI((s) => s.openTask)
-  const me = useKanban((s) => s.me)
+  const archiveTask = useKanban((s) => s.archiveTask)
   const commit = useKanban((s) => s.commit)
   const { message } = App.useApp()
   const [archived, setArchived] = useState<Task[]>([])
@@ -31,7 +31,7 @@ export default function ArchiveModal() {
   }, [open])
 
   const restore = async (id: string) => {
-    await api.patchTask(me || '匿名', id, { archived: false })
+    await archiveTask(id, false)
     await commit()
     message.success('已恢复到看板')
     void load()

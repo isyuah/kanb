@@ -1,6 +1,13 @@
 import type { CSSProperties } from 'react'
 import dayjs from 'dayjs'
-import type { Task } from './types'
+import type { Status, Task, User } from './types'
+
+/** 状态展示元信息（看板色 + antd Tag 色） */
+export const statusMeta: Record<Status, { label: string; accent: string; antdColor: string }> = {
+  todo: { label: '待认领', accent: '#8c8c8c', antdColor: 'default' },
+  in_progress: { label: '进行中', accent: '#4f6ef7', antdColor: 'processing' },
+  done: { label: '已完成', accent: '#2fbf71', antdColor: 'success' },
+}
 
 /** Deterministic pleasant color for a name. */
 const PALETTE = [
@@ -52,4 +59,11 @@ export function daysLeft(t: Task): number {
 
 export function isBlocked(t: Task): boolean {
   return t.deps.some((d) => d.status !== 'done')
+}
+
+/** 任务是否属于当前用户认领（优先 userId，兼容旧 claimer 字符串数据） */
+export function isMine(t: Task, me: User | null): boolean {
+  if (!me) return false
+  if (t.claims.some((c) => c.userId === me.id)) return true
+  return t.claims.some((c) => c.userId == null && c.claimer === me.displayName)
 }

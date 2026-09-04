@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type View = 'board' | 'graph'
+export type View = 'board' | 'graph' | 'calendar' | 'trash' | 'users' | 'settings'
 export type Filter = 'all' | 'mine' | 'overdue'
 
 interface UIState {
@@ -12,6 +12,10 @@ interface UIState {
   archiveOpen: boolean
   feedOpen: boolean
   newTaskOpen: boolean
+  /** 个人中心抽屉 */
+  profileOpen: boolean
+  /** 登录/注册弹窗（readonly/open 未登录时） */
+  loginOpen: boolean
   setView: (v: View) => void
   setQuery: (q: string) => void
   setFilter: (f: Filter) => void
@@ -20,6 +24,8 @@ interface UIState {
   setArchiveOpen: (open: boolean) => void
   setFeedOpen: (open: boolean) => void
   setNewTaskOpen: (open: boolean) => void
+  setProfileOpen: (open: boolean) => void
+  setLoginOpen: (open: boolean) => void
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -31,6 +37,8 @@ export const useUI = create<UIState>((set) => ({
   archiveOpen: false,
   feedOpen: false,
   newTaskOpen: false,
+  profileOpen: false,
+  loginOpen: false,
   setView: (view) => set({ view }),
   setQuery: (query) => set({ query }),
   setFilter: (filter) => set({ filter }),
@@ -39,4 +47,6 @@ export const useUI = create<UIState>((set) => ({
   setArchiveOpen: (archiveOpen) => set({ archiveOpen }),
   setFeedOpen: (feedOpen) => set({ feedOpen }),
   setNewTaskOpen: (newTaskOpen) => set({ newTaskOpen }),
+  setProfileOpen: (profileOpen) => set({ profileOpen }),
+  setLoginOpen: (loginOpen) => set({ loginOpen }),
 }))

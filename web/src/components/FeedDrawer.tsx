@@ -31,16 +31,16 @@ export default function FeedDrawer() {
       ) : (
         <Timeline
           items={activities.map((a) => ({
-            color: a.author ? '#4f6ef7' : 'gray',
+            color: a.authorName ? '#4f6ef7' : 'gray',
             children: (
               <div key={a.id} style={{ paddingBottom: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Avatar size={22} style={avatarStyle(a.author || '系统')}>
-                    {(a.author || '系').slice(0, 1).toUpperCase()}
+                  <Avatar size={22} style={avatarStyle(a.authorName || '系统')}>
+                    {(a.authorName || '系').slice(0, 1).toUpperCase()}
                   </Avatar>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <Text strong style={{ fontSize: 13 }}>
-                      {a.author || '系统'}
+                      {a.authorName || '系统'}
                     </Text>
                     <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
                       {ACTION_LABELS[a.action] ?? a.action}

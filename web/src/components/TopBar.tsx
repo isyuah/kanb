@@ -1,35 +1,36 @@
-import { useState } from 'react'
-import {
-  Avatar,
-  Button,
-  Dropdown,
-  Input,
-  Layout,
-  Segmented,
-  Space,
-  Tag,
-  Tooltip,
-  Typography,
-} from 'antd'
 import {
   ApartmentOutlined,
   AppstoreOutlined,
   BellOutlined,
+  CalendarOutlined,
   CheckCircleOutlined,
+  DeleteOutlined,
+  LogoutOutlined,
   PlusOutlined,
   SearchOutlined,
+  SettingOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useKanban } from '../store'
-import { useUI, type Filter } from '../ui'
+import { Avatar, Button, Dropdown, Input, Layout, Segmented, Space, Tag, Tooltip, Typography } from 'antd'
+import { isAdmin, useKanban, usePerms } from '../store'
+import { useUI, type Filter, type View } from '../ui'
 import { avatarStyle } from '../lib'
 
 const { Header } = Layout
 
+const VIEW_OPTIONS: { value: View; label: string; icon: React.ReactNode }[] = [
+  { value: 'board', label: '看板', icon: <AppstoreOutlined /> },
+  { value: 'graph', label: '依赖图', icon: <ApartmentOutlined /> },
+  { value: 'calendar', label: '日历', icon: <CalendarOutlined /> },
+]
+
 export default function TopBar() {
-  const me = useKanban((s) => s.me)
-  const setMe = useKanban((s) => s.setMe)
+  const user = useKanban((s) => s.user)
+  const logout = useKanban((s) => s.logout)
   const tasks = useKanban((s) => s.tasks)
+  const publicMode = useKanban((s) => s.publicMode)
+  const { writable } = usePerms()
   const view = useUI((s) => s.view)
   const setView = useUI((s) => s.setView)
   const filter = useUI((s) => s.filter)
@@ -37,46 +38,51 @@ export default function TopBar() {
   const setNewTaskOpen = useUI((s) => s.setNewTaskOpen)
   const setFeedOpen = useUI((s) => s.setFeedOpen)
   const setArchiveOpen = useUI((s) => s.setArchiveOpen)
+  const setProfileOpen = useUI((s) => s.setProfileOpen)
+  const setLoginOpen = useUI((s) => s.setLoginOpen)
   const query = useUI((s) => s.query)
   const setQuery = useUI((s) => s.setQuery)
-
-  const [nameInput, setNameInput] = useState('')
 
   const doneCount = tasks.filter((t) => t.status === 'done').length
   const overdueCount = tasks.filter(
     (t) => t.dueDate && t.status !== 'done' && new Date(t.dueDate).getTime() < Date.now(),
   ).length
-  const mineCount = me ? tasks.filter((t) => t.claims.some((c) => c.claimer === me)).length : 0
+  const mineCount = user ? tasks.filter((t) => t.claims.some((c) => c.userId === user.id)).length : 0
 
-  const commitName = () => {
-    const n = nameInput.trim()
-    if (n) {
-      setMe(n)
-      setNameInput('')
-    }
-  }
+  const displayName = user?.displayName ?? ''
 
-  const menu = {
+  const userMenu = {
     items: [
       {
-        key: 'switch',
-        label: (
-          <Space>
-            <UserOutlined />
-            切换身份
-          </Space>
-        ),
+        key: 'profile',
+        label: '个人中心',
+        icon: <UserOutlined />,
       },
+      ...(isAdmin(user)
+        ? ([
+            { type: 'divider' as const },
+            { key: 'users', label: '用户管理', icon: <TeamOutlined /> },
+            { key: 'settings', label: '系统设置', icon: <SettingOutlined /> },
+          ] as const)
+        : []),
       { type: 'divider' as const },
-      { key: 'guest', label: '以访客身份浏览（不记录操作）' },
+      { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true },
     ],
     onClick: ({ key }: { key: string }) => {
-      if (key === 'switch') {
-        setMe('')
-      } else if (key === 'guest') {
-        setMe('')
+      if (key === 'profile') setProfileOpen(true)
+      else if (key === 'users') setView('users')
+      else if (key === 'settings') setView('settings')
+      else if (key === 'logout') {
+        void logout()
+        setView('board')
       }
     },
+  }
+
+  const onViewChange = (v: View) => {
+    // 回收站/个人中心等非管理视图不允许 viewer 直达
+    if (v === 'trash' || v === 'users' || v === 'settings') return
+    setView(v)
   }
 
   return (
@@ -95,7 +101,11 @@ export default function TopBar() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-        <Typography.Title level={4} style={{ margin: 0, fontWeight: 800, letterSpacing: -0.5 }}>
+        <Typography.Title
+          level={4}
+          style={{ margin: 0, fontWeight: 800, letterSpacing: -0.5, cursor: 'pointer' }}
+          onClick={() => setView('board')}
+        >
           Kanb
         </Typography.Title>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -105,33 +115,34 @@ export default function TopBar() {
 
       <Segmented
         value={view}
-        onChange={(v) => setView(v as 'board' | 'graph')}
-        options={[
-          { value: 'board', label: '看板', icon: <AppstoreOutlined /> },
-          { value: 'graph', label: '依赖图', icon: <ApartmentOutlined /> },
-        ]}
+        onChange={(v) => onViewChange(v as View)}
+        options={VIEW_OPTIONS}
       />
 
-      <Input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        allowClear
-        prefix={<SearchOutlined style={{ color: 'rgba(31,36,48,0.4)' }} />}
-        placeholder="搜索任务、标签、认领人"
-        style={{ width: 220, marginLeft: 8 }}
-      />
+      {view !== 'board' ? null : (
+        <>
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            allowClear
+            prefix={<SearchOutlined style={{ color: 'rgba(31,36,48,0.4)' }} />}
+            placeholder="搜索任务、标签、认领人"
+            style={{ width: 200, marginLeft: 8 }}
+          />
 
-      <Segmented
-        value={filter}
-        onChange={(v) => setFilter(v as Filter)}
-        size="middle"
-        options={[
-          { value: 'all', label: '全部' },
-          { value: 'mine', label: `我的${me && mineCount > 0 ? ` ${mineCount}` : ''}` },
-          { value: 'overdue', label: `逾期${overdueCount > 0 ? ` ${overdueCount}` : ''}` },
-        ]}
-        style={{ marginLeft: 12 }}
-      />
+          <Segmented
+            value={filter}
+            onChange={(v) => setFilter(v as Filter)}
+            size="middle"
+            options={[
+              { value: 'all', label: '全部' },
+              { value: 'mine', label: `我的${user && mineCount > 0 ? ` ${mineCount}` : ''}` },
+              { value: 'overdue', label: `逾期${overdueCount > 0 ? ` ${overdueCount}` : ''}` },
+            ]}
+            style={{ marginLeft: 8 }}
+          />
+        </>
+      )}
 
       <div style={{ flex: 1 }} />
 
@@ -160,39 +171,56 @@ export default function TopBar() {
             归档
           </Button>
         </Tooltip>
+        {user && user.role !== 'viewer' && (
+          <Tooltip title="查看已删除（回收站）任务">
+            <Button type="text" icon={<DeleteOutlined />} onClick={() => setView('trash')}>
+              回收站
+            </Button>
+          </Tooltip>
+        )}
       </Space>
 
-      {me ? (
-        <Dropdown menu={menu} trigger={['click']}>
+      {user ? (
+        <Dropdown menu={userMenu} trigger={['click']}>
           <Space style={{ cursor: 'pointer', padding: '2px 8px', borderRadius: 20 }}>
-            <Avatar size={26} style={avatarStyle(me)}>
-              {me.slice(0, 1).toUpperCase()}
+            <Avatar size={26} style={avatarStyle(displayName)}>
+              {displayName.slice(0, 1).toUpperCase()}
             </Avatar>
-            <Typography.Text strong style={{ maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {me}
+            <Typography.Text
+              strong
+              style={{ maxWidth: 96, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              {displayName}
             </Typography.Text>
           </Space>
         </Dropdown>
       ) : (
-        <Space.Compact>
-          <Input
-            placeholder="输入你的名字，开始认领任务"
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onPressEnter={commitName}
-            prefix={<UserOutlined style={{ color: 'rgba(31,36,48,0.4)' }} />}
-            style={{ width: 190 }}
-            allowClear
-          />
-          <Button type="primary" onClick={commitName} disabled={!nameInput.trim()}>
-            确定
+        <>
+          <Button icon={<UserOutlined />} onClick={() => setLoginOpen(true)}>
+            登录 / 注册
           </Button>
-        </Space.Compact>
+          {publicMode === 'readonly' || publicMode === 'open' ? (
+            <Button onClick={() => setView('board')}>游客浏览</Button>
+          ) : null}
+        </>
       )}
 
-      <Button type="primary" icon={<PlusOutlined />} onClick={() => setNewTaskOpen(true)}>
-        新建任务
-      </Button>
+      <Tooltip title={writable ? '' : user ? '你的角色为只读，无法创建任务' : publicMode === 'private' ? '请先登录' : '只读模式，登录后可创建任务'}>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => {
+            if (!writable) {
+              if (!user) setLoginOpen(true)
+              return
+            }
+            setNewTaskOpen(true)
+          }}
+          disabled={view === 'trash' || view === 'users' || view === 'settings' || (!writable && !!user)}
+        >
+          新建任务
+        </Button>
+      </Tooltip>
     </Header>
   )
 }

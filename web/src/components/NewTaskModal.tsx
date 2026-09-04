@@ -1,15 +1,14 @@
 import { useState } from 'react'
 import { App, DatePicker, Input, Modal, Space, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
-import { useKanban } from '../store'
+import { useKanban, usePerms } from '../store'
 import { useUI } from '../ui'
-import { api } from '../api'
 
 export default function NewTaskModal() {
   const open = useUI((s) => s.newTaskOpen)
   const setOpen = useUI((s) => s.setNewTaskOpen)
-  const commit = useKanban((s) => s.commit)
-  const me = useKanban((s) => s.me)
+  const createTask = useKanban((s) => s.createTask)
+  const { user: me } = usePerms()
   const { message } = App.useApp()
 
   const [title, setTitle] = useState('')
@@ -34,19 +33,18 @@ export default function NewTaskModal() {
       message.warning('请填写任务标题')
       return
     }
-    if (!me) {
-      message.warning('请先在右上角输入你的名字')
+    if (!me && useKanban.getState().publicMode !== 'open') {
+      message.warning('请先登录后再创建任务')
       return
     }
     setSaving(true)
     try {
-      const task = await api.createTask(me, {
+      const task = await createTask({
         title: t,
         content: content.trim(),
         tags,
         dueDate: due ? due.format('YYYY-MM-DD') : null,
       })
-      await commit()
       message.success('任务已创建')
       close()
       useUI.getState().openTask(task.id)

@@ -3,9 +3,9 @@ import { Avatar, Badge, Progress, Tag, Tooltip, Typography } from 'antd'
 import { ClockCircleOutlined, FlagOutlined, LinkOutlined } from '@ant-design/icons'
 import type { Task } from '../types'
 import { STATUS_ORDER, type Status } from '../types'
-import { useKanban } from '../store'
+import { useKanban, usePerms } from '../store'
 import { useUI } from '../ui'
-import { avatarStyle, daysLeft, isOverdue, taskPercent } from '../lib'
+import { avatarStyle, daysLeft, isMine, isOverdue, taskPercent } from '../lib'
 import {
   DndContext,
   DragOverlay,
@@ -31,7 +31,7 @@ const ALL_STATUS: Status[] = ['todo', 'in_progress', 'done']
 
 export default function KanbanBoard() {
   const tasks = useKanban((s) => s.tasks)
-  const me = useKanban((s) => s.me)
+  const { user: me, writable } = usePerms()
   const query = useUI((s) => s.query)
   const filter = useUI((s) => s.filter)
   const openTask = useUI((s) => s.openTask)
@@ -51,7 +51,7 @@ export default function KanbanBoard() {
   const filtered = useMemo(() => {
     let list = tasks
     if (filter === 'mine') {
-      list = list.filter((t) => t.claims.some((c) => c.claimer === me))
+      list = list.filter((t) => isMine(t, me))
     } else if (filter === 'overdue') {
       list = list.filter(
         (t) => t.dueDate && t.status !== 'done' && new Date(t.dueDate).getTime() < Date.now(),
@@ -231,6 +231,7 @@ export default function KanbanBoard() {
             taskById={(id) => tasks.find((t) => t.id === id)}
             onOpen={handleOpen}
             isOver={overStatus === status}
+            writable={writable}
           />
         ))}
         <DragOverlay dropAnimation={null}>
@@ -247,12 +248,14 @@ function BoardColumn({
   taskById,
   onOpen,
   isOver,
+  writable,
 }: {
   status: Status
   taskIds: string[]
   taskById: (id: string) => Task | undefined
   onOpen: (id: string) => void
   isOver: boolean
+  writable: boolean
 }) {
   const meta = COLUMN_META[status]
   const { setNodeRef, isOver: dropOver } = useDroppable({ id: `col-${status}` })
@@ -301,7 +304,7 @@ function BoardColumn({
           }}
         >
           {tasks.map((t) => (
-            <TaskCard key={t.id} task={t} onOpen={onOpen} />
+            <TaskCard key={t.id} task={t} onOpen={onOpen} writable={writable} />
           ))}
           {/* 列尾放置区：拖到列表末尾空白 → 追加到列尾；空列时兼作空态提示 */}
           <ColumnTailDrop status={status} empty={tasks.length === 0} highlighted={highlighted} />
@@ -345,9 +348,10 @@ function ColumnTailDrop({
   )
 }
 
-function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: string) => void }) {
+function TaskCard({ task, onOpen, writable }: { task: Task; onOpen: (id: string) => void; writable: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
+    disabled: !writable,
   })
   // dnd-kit: 非拖拽卡在排序变化时获得 transform 位移 + transition → 平滑让位
   // 被拖卡: visibility hidden 保留原占位(高度), 视觉由 DragOverlay 浮层负责
@@ -360,8 +364,8 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: string) => void }
     <div style={style}>
       <div
         ref={setNodeRef}
-        {...attributes}
-        {...listeners}
+        {...(writable ? attributes : {})}
+        {...(writable ? listeners : {})}
         onClick={() => onOpen(task.id)}
         className="kanb-card"
         data-task-id={task.id}
@@ -370,7 +374,7 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: string) => void }
           borderRadius: 12,
           border: '1px solid rgba(31,36,48,0.08)',
           padding: '10px 12px',
-          cursor: 'grab',
+          cursor: writable ? 'grab' : 'pointer',
           touchAction: 'none',
           boxShadow: '0 1px 2px rgba(31,36,48,0.04)',
           transition: 'box-shadow .15s ease, border-color .15s ease',
@@ -396,8 +400,8 @@ function TaskCardInner({ task, overlay }: { task: Task; overlay?: boolean }) {
   const pct = taskPercent(task)
   const overdue = isOverdue(task)
   const blocked = task.deps.some((d) => d.status !== 'done')
-  const me = useKanban((s) => s.me)
-  const claimedByMe = task.claims.some((c) => c.claimer === me)
+  const me = useKanban((s) => s.user)
+  const claimedByMe = isMine(task, me)
   return (
     <div style={{ width: overlay ? 300 : undefined }}>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>

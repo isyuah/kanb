@@ -15,3 +15,8 @@ Thumbs.db
 
 # MCP
 mcp/kanb-mcp.exe
+
+# 部署产物与备份
+server/kanb-server-linux
+*.tar
+server/*.bak-*

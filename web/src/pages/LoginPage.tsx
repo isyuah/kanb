@@ -1,13 +1,5 @@
 import { useState } from 'react'
-import {
-  App,
-  Button,
-  Card,
-  Form,
-  Input,
-  Segmented,
-  Typography,
-} from 'antd'
+import { App, Button, Form, Input, Segmented, Typography } from 'antd'
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import { useKanban } from '../store'
@@ -16,11 +8,11 @@ import { useUI } from '../ui'
 const { Title, Text } = Typography
 
 /**
- * 登录/注册卡片。私密模式未登录时作为整页登录门使用；
- * readonly/open 模式下也可通过登录弹窗登录。
- * 登录成功后由调用方负责跳回目标视图（applyAuth 已同步本地身份）。
+ * 登录/注册表单内容（不含外框）。
+ * 由 LoginGate（整页场景）与 LoginModal（弹窗场景）各自套上合适的容器：
+ * 避免「panel 内嵌 panel」导致的双层阴影与关闭按钮错位。
  */
-export default function LoginCard() {
+export default function LoginForm() {
   const { message } = App.useApp()
   const applyAuth = useKanban((s) => s.applyAuth)
   const setView = useUI((s) => s.setView)
@@ -45,12 +37,9 @@ export default function LoginCard() {
   }
 
   return (
-    <Card
-      style={{ width: 380, maxWidth: '92vw', boxShadow: '0 10px 40px rgba(31,36,48,0.12)' }}
-      styles={{ body: { padding: '24px 28px' } }}
-    >
-      <div style={{ textAlign: 'center', marginBottom: 8 }}>
-        <Title level={3} style={{ marginBottom: 4, fontWeight: 800 }}>
+    <div>
+      <div style={{ textAlign: 'center', marginBottom: 4 }}>
+        <Title level={3} style={{ marginBottom: 2, fontWeight: 800 }}>
           Kanb
         </Title>
         <Text type="secondary">团队任务看板</Text>
@@ -109,7 +98,7 @@ export default function LoginCard() {
           </Button>
         </Form.Item>
       </Form>
-    </Card>
+    </div>
   )
 }
 
@@ -129,7 +118,20 @@ export function LoginGate() {
         padding: 20,
       }}
     >
-      <LoginCard />
+      <div
+        style={{
+          width: 380,
+          maxWidth: '100%',
+          background: 'rgba(255,255,255,0.92)',
+          backdropFilter: 'blur(12px)',
+          borderRadius: 18,
+          padding: '28px 30px 24px',
+          boxShadow: '0 20px 60px rgba(31,36,48,0.16), 0 2px 8px rgba(31,36,48,0.05)',
+          border: '1px solid rgba(255,255,255,0.7)',
+        }}
+      >
+        <LoginForm />
+      </div>
     </div>
   )
 }

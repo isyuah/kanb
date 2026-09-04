@@ -1,0 +1,11 @@
+services:
+  kanb:
+    image: kanb:local
+    container_name: kanb
+    restart: unless-stopped
+    ports:
+      # 只绑本机回环，反代（nginx/caddy 等）在宿主机上时走 127.0.0.1:8400
+      # 若反代在另一台机器/容器网络里，改成 "8400:8400"
+      - "127.0.0.1:8400:8400"
+    volumes:
+      - ./data:/data

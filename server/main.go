@@ -1,0 +1,73 @@
+package main
+
+import (
+	"embed"
+	"flag"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"path"
+	"strings"
+	"time"
+)
+
+//go:embed all:webdist
+var webFS embed.FS
+
+func main() {
+	addr := flag.String("addr", ":8400", "listen address")
+	dbPath := flag.String("db", "kanb.db", "sqlite database file path")
+	flag.Parse()
+
+	store, err := OpenStore(*dbPath)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	store.Seed() // roles 字典 + anonymous 账号 + 默认公开度（幂等）
+
+	a := &app{store: store, hub: newHub()}
+
+	// API routes
+	mux := http.NewServeMux()
+	mux.Handle("/api/", a.routes())
+
+	// Static files (embedded webdist) for production
+	distFS, err := fs.Sub(webFS, "webdist")
+	if err != nil {
+		log.Printf("webdist not embedded; API only")
+	} else {
+		fileServer := http.FileServer(http.FS(distFS))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// SPA fallback: serve index.html for non-file paths
+			p := path.Clean(r.URL.Path)
+			if p == "/" {
+				r.URL.Path = "/"
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			// try file first
+			if _, err := fs.Stat(distFS, strings.TrimPrefix(p, "/")); err == nil {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			// SPA fallback
+			r.URL.Path = "/"
+			fileServer.ServeHTTP(w, r)
+		})
+	}
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	log.Printf("kanb server listening on http://localhost%s (db: %s)", *addr, *dbPath)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+var _ = os.Getenv

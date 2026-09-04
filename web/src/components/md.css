@@ -1,0 +1,89 @@
+/* Markdown 内容样式（贴合 AntD 排版） */
+.kanb-md {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: rgba(31, 36, 48, 0.88);
+  word-break: break-word;
+}
+.kanb-md > :first-child {
+  margin-top: 0;
+}
+.kanb-md > :last-child {
+  margin-bottom: 0;
+}
+.kanb-md h1,
+.kanb-md h2,
+.kanb-md h3,
+.kanb-md h4 {
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 14px 0 8px;
+}
+.kanb-md h1 {
+  font-size: 1.35em;
+}
+.kanb-md h2 {
+  font-size: 1.22em;
+}
+.kanb-md h3 {
+  font-size: 1.1em;
+}
+.kanb-md h4 {
+  font-size: 1em;
+}
+.kanb-md p {
+  margin: 6px 0;
+}
+.kanb-md ul,
+.kanb-md ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+.kanb-md li {
+  margin: 3px 0;
+}
+.kanb-md code {
+  background: rgba(31, 36, 48, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+  font-size: 0.9em;
+}
+.kanb-md pre {
+  background: rgba(31, 36, 48, 0.05);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.kanb-md pre code {
+  background: transparent;
+  padding: 0;
+}
+.kanb-md blockquote {
+  border-left: 3px solid rgba(79, 110, 247, 0.35);
+  margin: 8px 0;
+  padding: 2px 12px;
+  color: rgba(31, 36, 48, 0.6);
+}
+.kanb-md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+.kanb-md th,
+.kanb-md td {
+  border: 1px solid rgba(31, 36, 48, 0.12);
+  padding: 4px 10px;
+  text-align: left;
+}
+.kanb-md th {
+  background: rgba(31, 36, 48, 0.04);
+}
+.kanb-md img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+.kanb-md a {
+  color: #4f6ef7;
+}

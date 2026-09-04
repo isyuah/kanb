@@ -1,0 +1,61 @@
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+  background: #f5f6fb;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* subtle scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 36, 48, 0.18);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 36, 48, 0.3);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* keep board columns from shrinking content when list scrolls */
+.kanb-card {
+  user-select: none;
+}
+
+/* antd v6 token alignment */
+.ant-segmented {
+  background: rgba(31, 36, 48, 0.05);
+}
+
+/* xyflow canvas covers full content area */
+.react-flow {
+  border-radius: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

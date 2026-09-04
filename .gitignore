@@ -1,0 +1,17 @@
+# Go
+server/kanb-server.exe
+server/*.db
+server/webdist/
+
+# Node
+web/node_modules/
+web/dist/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# MCP
+mcp/kanb-mcp.exe

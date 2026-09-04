@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -226,7 +225,7 @@ func (a *app) recordActivity(r *http.Request, action, target, targetID string) {
 		CreatedAt: now(),
 	}
 	if err := a.store.AddActivity(act); err != nil {
-		log.Printf("record activity: %v", err)
+		log.Warn().Err(err).Str("action", action).Str("target", target).Str("targetId", targetID).Msg("record activity")
 	}
 	a.hub.publish(targetID)
 }
@@ -237,7 +236,7 @@ func (a *app) writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("write json: %v", err)
+		log.Warn().Err(err).Msg("write json")
 	}
 }
 
@@ -306,6 +305,7 @@ func (a *app) routes() http.Handler {
 
 	// ===== 动态 =====
 	mux.HandleFunc("GET /api/activities", a.gateRead(a.handleActivities))
+	mux.HandleFunc("GET /api/stats", a.gateRead(a.handleStats))
 
 	// ===== SSE =====
 	mux.HandleFunc("GET /api/events", a.handleEvents)
@@ -590,6 +590,7 @@ func (a *app) handleReorder(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSoftDeleteTask 软删任务 → 回收站。
+// 权限：admin 可删任意；member 仅限删除自己创建的任务（契约见 docs/api-contract.md）。
 func (a *app) handleSoftDeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	existing, err := a.store.GetTask(id)
@@ -597,12 +598,29 @@ func (a *app) handleSoftDeleteTask(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 404, "任务不存在")
 		return
 	}
+	u := currentUser(r)
+	if u != nil && u.Role != RoleAdmin {
+		if existing.CreatedBy == "" || existing.CreatedBy != u.ID {
+			a.writeErr(w, 403, "只能删除自己创建的任务")
+			return
+		}
+	}
 	if err := a.store.SoftDeleteTask(id); err != nil {
 		a.writeErr(w, 500, "删除失败: "+err.Error())
 		return
 	}
 	a.recordActivity(r, "deleted", "task", id)
 	a.writeNoContent(w)
+}
+
+// handleStats 看板统计（只读：登录用户或公开模式匿名均可访问，经 gateRead 放行）。
+func (a *app) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.store.Stats()
+	if err != nil {
+		a.writeErr(w, 500, "读取统计失败: "+err.Error())
+		return
+	}
+	a.writeJSON(w, 200, stats)
 }
 
 // ---- 认领 / 进度 / 依赖 ----
@@ -840,7 +858,7 @@ func (a *app) handlePurge(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: now(),
 		}
 		if err := a.store.AddActivity(act); err != nil {
-			log.Printf("record activity: %v", err)
+			log.Warn().Err(err).Msg("record activity (purge)")
 		}
 	}
 	if err := a.store.DeleteTask(id); err != nil {
@@ -977,7 +995,9 @@ func (a *app) handleTaskPatch(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, 200, updated)
 }
 
-// withCommon adds CORS (dev convenience) and request logging.
+// withCommon adds CORS (dev convenience), 统一 Bearer 鉴权与请求日志。
+// 鉴权放在最外层：内层 requireUser/gateWrite 的 tryAuth 幂等复用其结果，
+// 保证访问日志能记录真实操作者（而非一律 anon）。
 func (a *app) withCommon(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -987,12 +1007,24 @@ func (a *app) withCommon(next http.Handler) http.Handler {
 			w.WriteHeader(204)
 			return
 		}
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		who := "anon"
-		if u := currentUser(r); u != nil {
-			who = u.DisplayName + "(" + u.Role + ")"
+		rr := r
+		if bearerToken(r) != "" {
+			if authed, err := a.tryAuth(r); err != nil {
+				log.Warn().Err(err).Msg("auth precheck")
+			} else {
+				rr = authed
+			}
 		}
-		log.Printf("%s %s (%s) %s", r.Method, r.URL.Path, who, time.Since(start).Round(time.Millisecond))
+		start := time.Now()
+		next.ServeHTTP(w, rr)
+		who := "anon"
+		role := "-"
+		if u := currentUser(rr); u != nil {
+			who = u.DisplayName
+			role = u.Role
+		}
+		log.Debug().Str("method", r.Method).Str("path", r.URL.Path).
+			Str("user", who).Str("role", role).
+			Dur("dur", time.Since(start)).Msg("http")
 	})
 }

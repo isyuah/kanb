@@ -4,7 +4,6 @@ import (
 	"embed"
 	"flag"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -18,11 +17,14 @@ var webFS embed.FS
 func main() {
 	addr := flag.String("addr", ":8400", "listen address")
 	dbPath := flag.String("db", "kanb.db", "sqlite database file path")
+	logLevel := flag.String("log-level", "info", "log level: debug|info|warn|error")
+	logJSON := flag.Bool("log-json", false, "output logs as JSON lines")
 	flag.Parse()
+	setupLog(*logLevel, *logJSON)
 
 	store, err := OpenStore(*dbPath)
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		log.Fatal().Err(err).Msg("open store")
 	}
 	defer store.Close()
 	store.Seed() // roles 字典 + anonymous 账号 + 默认公开度（幂等）
@@ -36,7 +38,7 @@ func main() {
 	// Static files (embedded webdist) for production
 	distFS, err := fs.Sub(webFS, "webdist")
 	if err != nil {
-		log.Printf("webdist not embedded; API only")
+		log.Warn().Msg("webdist not embedded; serving API only")
 	} else {
 		fileServer := http.FileServer(http.FS(distFS))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -64,9 +66,9 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("kanb server listening on http://localhost%s (db: %s)", *addr, *dbPath)
+	log.Info().Str("addr", *addr).Str("db", *dbPath).Msg("kanb server listening")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("http server")
 	}
 }
 

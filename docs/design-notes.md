@@ -1,6 +1,6 @@
-# Kanb v2 课设报告素材（架构 / 权限 / 工程）
+# Kanb 设计说明（架构 / 权限 / 工程）
 
-> 供课设报告「系统设计」「系统实现」「测试」章节取材。本文件是素材索引，正文需按课程模板展开。
+> 系统设计、权限模型与工程取舍的索引。与 `docs/db-design.md`（数据库设计）、`docs/api-contract.md`（接口契约）配套阅读。
 
 ## 1. 系统架构
 
@@ -34,7 +34,7 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
 ## 3. 数据库（12 表，3NF）
 
 完整设计与 3NF 论证见 `docs/db-design.md`。要点：
-- 1NF 整改：v1 `tasks.tags` JSON 多值属性 → `tags` + `task_tags` 关联表。
+- 1NF：多值属性拆表——`tags` + `task_tags` 关联表替代 JSON 字符串列。
 - 2NF：三张复合主键关联表（task_tags/user_roles/deps）无部分依赖。
 - 3NF：无传递依赖；`activities.task_title` 保留为审计快照（刻意的历史事实冗余，报告 §4.4 论证）。
 - 参照完整性：外键全部真实启用（`PRAGMA foreign_keys=ON`），级联删除经单测验证无孤儿。
@@ -63,7 +63,7 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
 | readonly | 可浏览全部数据，写操作 401 |
 | open | 完全免登录可读写；匿名写回落内置 `anonymous` 账号（display_name「匿名」） |
 
-- 设计意图：private 适合内部团队；open 复刻 v1「免登录极简体验」，二者兼得。
+- 设计意图：private 适合内部团队（默认）；open 提供免登录即用的轻量入口，适用于公开演示/临时协作；readonly 介于两者之间。
 - 匿名回落账号是 `users` 表预置隐藏行，保证 `activities/claims` 的 user_id 外键恒有值。
 
 ## 6. 软删与回收站
@@ -81,7 +81,8 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
   - `TestClaimUnique`：认领 UNIQUE 约束
   - `TestWouldCycle`：依赖防成环（含自依赖）
   - `TestSoftDeleteTrash`：软删→回收站→恢复→彻底删除生命周期
-- API 集成冒烟：52 项断言全绿（注册/登录/角色矩阵/公开度三态/回收站/级联/me），脚本已归档 docs/seed-demo.mjs 同期的 smoke 流程。
+- API 集成冒烟：52 项断言（注册/登录/角色矩阵/公开度三态/回收站/级联/me），与本仓库联调流程同期维护。
+- 演示数据：`scripts/seed-demo.mjs` 生成一套完整业务场景（三角色用户 + 任务/认领/进度/依赖链），供验收演示与手工验证使用。
 - 浏览器端到端：登录门→注册首用户 admin→建任务/认领/进度→日历/回收站/用户管理/系统设置/个人中心逐页人工验证。
 
 ## 8. 开发中修复的真实缺陷（报告「测试与排错」素材）
@@ -91,14 +92,14 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
 2. **ListUsers 自死锁**：`SetMaxOpenConns(1)` 下，ListUsers 在 `rows` 未关闭时循环内查询用户角色，内层查询等外层连接释放 → 整服僵死（GET /api/users 后所有请求无响应）。
    修复：先全量扫描并关闭 rows，再统一补角色。配套回归单测。
 
-## 9. 演进对照（v1 → v2，报告「课程设计内容」章节）
+## 9. 技术要点速查
 
-| 维度 | v1（原型） | v2（课设） |
+| 维度 | 实现 | 说明 |
 |---|---|---|
-| 操作者 | 名字字符串散落 3 表 | users 实体 + user_id 外键（3NF） |
-| 标签 | tasks.tags JSON | tags + task_tags（1NF） |
-| 外键 | 声明未启用 | PRAGMA 启用 + 级联 + 单测 |
-| 权限 | 无（仅留痕） | RBAC 三角色 + 会话 |
-| 删除 | 物理删除 | 软删 + 回收站 |
-| 配置 | 硬编码 | settings 表（公开度） |
-| 前端 | 输入名字即用 | 登录门 + 用户体系 + 管理页 + 日历 |
+| 操作者留痕 | users 实体 + user_id 外键 | display_name 变化不影响历史归属 |
+| 标签 | tags + task_tags | 1NF 多对多，JOIN 可查 |
+| 外键 | PRAGMA foreign_keys=ON | 真实启用 + 级联删除单测覆盖 |
+| 权限 | RBAC 三角色 + 会话 | 与公开度模式正交（§4/§5） |
+| 删除 | deleted_at 软删 + 回收站 | 防误删、可恢复 |
+| 配置 | settings 表（公开度） | 免改代码切公开策略 |
+| 前端 | 登录门 + 管理页 + 日历 + 依赖图 | 单页应用全业务覆盖 |

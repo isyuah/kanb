@@ -12,9 +12,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// v2 schema（课设数据库，全新建库）：users/roles/user_roles/sessions/tags/task_tags/
+// schema 为全量库表定义：users/roles/user_roles/sessions/tags/task_tags/
 // tasks/claims/progress/deps/activities/settings 共 12 表，满足 3NF，见 docs/db-design.md。
-// 注意：SQLite 不支持修改列，本 schema 只会在全新库上执行（老 kanb.db 用 -db 指向新路径即可）。
+// 注意：SQLite 不支持修改列，本 schema 只在全新库上执行（历史数据迁移需另做，见 docs）。
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,              -- 纳秒时间戳字符串主键
@@ -157,8 +157,8 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // serialize writes; sqlite file lock simplicity
-	// 外键约束必须真正启用（课设要求）：v1 声明了 REFERENCES 却未开启，
-	// 删除任务会遗留孤儿数据；v2 在此连接上强制开启。
+	// 外键约束必须真正启用：连接层强制 PRAGMA foreign_keys=ON，
+	// 否则 REFERENCES 声明的级联与约束不生效，删除任务会遗留孤儿数据。
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
@@ -689,6 +689,123 @@ func (s *Store) WouldCycle(taskID, depID string) (bool, error) {
 		queue = append(queue, next...)
 	}
 	return false, nil
+}
+
+// ---- 统计 ----
+
+// Stats 聚合统计：分布/计数用 GROUP BY，任务进度在应用层平均（无认领进度视为 0）。
+func (s *Store) Stats() (*Stats, error) {
+	out := &Stats{ByStatus: []TaskStat{}, ByTag: []TagStat{}, ByCreator: []CreatorStat{}, ByMember: []MemberWorkload{}}
+
+	// 总数 + 状态分布（未删未归档）
+	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.TaskTotal += n
+		switch st {
+		case string(StatusTodo):
+			out.Todo = n
+		case string(StatusInProgress):
+			out.InProgress = n
+		case string(StatusDone):
+			out.Done = n
+		}
+		out.ByStatus = append(out.ByStatus, TaskStat{Status: st, Count: n})
+	}
+	rows.Close()
+
+	// 归档数
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=1`).Scan(&out.Archived); err != nil {
+		return nil, err
+	}
+	// 逾期数（未完成且 due_date < 今天）
+	today := time.Now().UTC().Format("2006-01-02")
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 AND status<>'done' AND due_date IS NOT NULL AND due_date<?`, today).Scan(&out.Overdue); err != nil {
+		return nil, err
+	}
+
+	// 任务平均进度：认领者的最新一条进度记录平均（无记录=0）
+	rows, err = s.db.Query(`SELECT COALESCE(AVG(p.percent),0) FROM progress p
+		JOIN tasks t ON t.id=p.task_id WHERE t.deleted_at IS NULL AND t.archived=0`)
+	if err != nil {
+		return nil, err
+	}
+	if rows.Next() {
+		if err := rows.Scan(&out.AvgTaskPct); err != nil {
+			rows.Close()
+			return nil, err
+		}
+	}
+	rows.Close()
+
+	// 标签分布（仅未删未归档任务）
+	rows, err = s.db.Query(`SELECT tg.name, COUNT(*) FROM task_tags tt
+		JOIN tags tg ON tg.id=tt.tag_id
+		JOIN tasks t ON t.id=tt.task_id
+		WHERE t.deleted_at IS NULL AND t.archived=0
+		GROUP BY tg.name ORDER BY COUNT(*) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var ts TagStat
+		if err := rows.Scan(&ts.Tag, &ts.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.ByTag = append(out.ByTag, ts)
+	}
+	rows.Close()
+
+	// 按创建人分布（匿名/无创建人计为「匿名」）
+	rows, err = s.db.Query(`SELECT COALESCE(u.display_name,'匿名'), COUNT(*) FROM tasks t
+		LEFT JOIN users u ON u.id=t.created_by
+		WHERE t.deleted_at IS NULL AND t.archived=0
+		GROUP BY t.created_by ORDER BY COUNT(*) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var cs CreatorStat
+		if err := rows.Scan(&cs.UserName, &cs.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.ByCreator = append(out.ByCreator, cs)
+	}
+	rows.Close()
+
+	// 成员工作量：认领任务数 + 其全部进度记录平均（无进度记录记 0 由 AVG 忽略）
+	rows, err = s.db.Query(`SELECT c.user_id, COALESCE(u.display_name,'已注销'),
+		COUNT(DISTINCT c.task_id), COALESCE(AVG(p.percent),0)
+		FROM claims c
+		JOIN users u ON u.id=c.user_id
+		LEFT JOIN progress p ON p.task_id=c.task_id AND p.user_id=c.user_id
+		JOIN tasks t ON t.id=c.task_id
+		WHERE t.deleted_at IS NULL
+		GROUP BY c.user_id ORDER BY COUNT(DISTINCT c.task_id) DESC`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var mw MemberWorkload
+		if err := rows.Scan(&mw.UserID, &mw.UserName, &mw.TaskCount, &mw.AvgPct); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.ByMember = append(out.ByMember, mw)
+	}
+	rows.Close()
+
+	return out, nil
 }
 
 // ---- 动态 ----

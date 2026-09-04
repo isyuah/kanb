@@ -1,10 +1,10 @@
-# Kanb v2 数据库设计（课设）
+# Kanb 数据库设计
 
-> 版本：v2（课设二期） · 存储：SQLite（modernc.org/sqlite，纯 Go） · 规范级：3NF
+> 存储：SQLite（modernc.org/sqlite，纯 Go 驱动） · 规范级：3NF
 
 ## 1. 需求背景
 
-Kanb 是一套团队任务看板（B/S）。v1 为免登录原型；v2 增加用户体系、角色权限、系统设置（公开度）、回收站（软删）与日历/个人中心等视图，并完成数据库规范化改造。本文档描述 v2 的库表设计与 3NF 论证，是课设数据库部分的规格依据。
+Kanb 是一套团队任务看板（B/S）。系统包含用户体系（注册/登录/三角色权限）、任务看板（多列拖拽/认领/进度/依赖）、回收站（软删恢复）、系统设置（公开度）等模块。任务、认领、进度、依赖、标签、操作审计之间关系复杂，是典型的规范化设计对象。本文档描述库表设计与 3NF 论证，是数据库设计部分的规格依据。
 
 ## 2. ER 总览
 
@@ -24,20 +24,20 @@ activities（审计流水，user_id 弱引用 + task_title 快照）
 
 | # | 表 | 角色 |
 |---|---|---|
-| 1 | users | 用户实体（v2 规范化核心） |
+| 1 | users | 用户实体（认证与操作留痕的基础） |
 | 2 | roles | 角色字典（admin / member / viewer） |
 | 3 | user_roles | 用户—角色 关联 |
 | 4 | sessions | 登录会话 |
-| 5 | tags | 标签实体（1NF 拆表） |
+| 5 | tags | 标签实体 |
 | 6 | task_tags | 任务—标签 关联 |
-| 7 | tasks | 任务（v2：去 JSON 标签列、加 created_by/deleted_at） |
+| 7 | tasks | 任务（含 created_by 创建者 / deleted_at 软删标记） |
 | 8 | claims | 任务认领（多对多：任务—用户） |
 | 9 | progress | 进度记录（任务—用户 的 1:N 明细） |
 | 10 | deps | 依赖关系（任务自引用多对多） |
 | 11 | activities | 操作审计流水 |
 | 12 | settings | 系统设置（公开度模式等） |
 
-## 3. 建表 DDL（v2 定稿）
+## 3. 建表 DDL
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -46,7 +46,7 @@ CREATE TABLE users (
   id            TEXT PRIMARY KEY,              -- 自生成主键（纳秒时间戳）
   username      TEXT NOT NULL UNIQUE,          -- 登录名
   password_hash TEXT NOT NULL,                 -- bcrypt
-  display_name  TEXT NOT NULL DEFAULT '',      -- 展示名（原 v1 的操作者名字）
+  display_name  TEXT NOT NULL DEFAULT '',      -- 展示名（界面上代替用户名显示）
   disabled      INTEGER NOT NULL DEFAULT 0,    -- 停用（软删用户，保审计链）
   created_at    TEXT NOT NULL
 );
@@ -153,8 +153,7 @@ CREATE TABLE settings (
 ### 4.1 1NF：属性原子性
 
 - 所有字段均为不可再分的原子值，无重复组、无数组/集合字段。
-- **v1 遗留整改点**：v1 的 `tasks.tags` 以 JSON 数组字符串存多值属性，违反 1NF——对标签的查询/统计无法用 SQL 完成，只能整串读出后应用层解析，且无法声明参照完整性。
-  v2 拆分为 `tags`（标签实体）与 `task_tags`（关联表），任务-标签成为标准的多对多关系，可用 `JOIN`/`GROUP BY` 直接查询。
+- 多值属性拆分：标签若以 JSON 数组字符串存于 `tasks.tags`，查询/统计将无法用 SQL 完成，只能整串读出后应用层解析，且无法声明参照完整性。本设计将标签拆为 `tags`（标签实体）+ `task_tags`（关联表），任务-标签成为标准多对多关系，可用 `JOIN`/`GROUP BY` 直接查询。
 
 ### 4.2 2NF：消除部分依赖
 
@@ -189,23 +188,24 @@ CREATE TABLE settings (
 
 ### 4.5 参照完整性
 
-- 所有外键均真实声明并在连接层启用：`PRAGMA foreign_keys=ON`（v1 声明了 REFERENCES 却未启用，删除任务会遗留孤儿 claims/progress/deps——v2 修复，并在 store 层测试覆盖级联删除）。
-- claims/progress 增加 `UNIQUE(task_id, user_id)` 等数据库层约束，将 v1 靠应用代码维护的不变量下沉到库层。
+- 所有外键均真实声明并在连接层强制启用：`PRAGMA foreign_keys=ON`（声明 REFERENCES 而不启用时，删除任务会遗留孤儿 claims/progress/deps）。级联删除由 store 层单测覆盖（TestCascadeDelete）。
+- claims/progress 增加 `UNIQUE(task_id, user_id)` 等数据库层约束，将易靠应用代码维护、易漏的不变量下沉到库层。
 - 用户采用 disabled 软停用而非物理删除，保证 activities/claims/progress 历史审计链不断（外键均 ON DELETE CASCADE/SET NULL 兜底）。
 
 ## 5. 索引与约束小结
 
 见各表 DDL 内。要点：任务列表查询路径（status/archived/deleted_at）、关联反向查询（claims/progress/task_tags 的 user/tag 侧）均建索引；业务不变量（唯一、取值范围、非自环）全部声明为约束。
 
-## 6. 与 v1 的差异对照（报告素材）
+## 6. 关键设计取舍（报告素材）
 
-| 项 | v1 | v2 | 规范化意义 |
-|---|---|---|---|
-| 操作者 | 名字字符串散落 3 表 | users 实体 + user_id 外键 | 消除重复存储/更新异常 |
-| 任务标签 | tasks.tags JSON 文本 | tags + task_tags | 1NF 拆表 |
-| 认领唯一 | 应用层检查 | UNIQUE(task_id,user_id) | 约束入库 |
-| 外键 | 声明未启用 | PRAGMA foreign_keys=ON | 参照完整性落地 |
-| 删除 | 物理删除 | deleted_at 软删 + 回收站 | 审计/误删恢复 |
-| 用户删除 | — | disabled 软停用 | 审计链不断 |
-| 系统配置 | 硬编码 | settings 表 | 配置数据化 |
-| 自依赖 | 代码防环 | + CHECK(task_id<>dep_id) | 约束入库 |
+| 设计点 | 实现 | 理由 |
+|---|---|---|
+| 操作者 | users 实体 + user_id 外键（display_name JOIN 展示） | 消除名字重复存储/更新异常（3NF） |
+| 任务标签 | tags + task_tags 关联表 | 1NF 拆多值属性，JOIN 可查 |
+| 认领唯一 | UNIQUE(task_id,user_id) | 约束入库，不靠应用层检查 |
+| 外键 | 连接层 PRAGMA foreign_keys=ON | 参照完整性真实落地 |
+| 任务删除 | deleted_at 软删 + 回收站恢复 | 防误删，保留审计链 |
+| 用户删除 | disabled 软停用 | 历史 claims/progress/activities 不断链 |
+| 系统配置 | settings 键值表 | 配置数据化，免改代码 |
+| 依赖自环 | 应用 BFS 防环 + CHECK(task_id<>dep_id) | 双层防护 |
+| 审计留痕 | activities.task_title 快照 | 任务删改名后历史仍可读（见 §4.4） |

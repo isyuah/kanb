@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -76,17 +75,17 @@ func (s *Store) Seed() {
 	for _, r := range roles {
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO roles (id,code,description) VALUES (?,?,?)`,
 			newID(), r.code, r.desc); err != nil {
-			log.Printf("seed role %s: %v", r.code, err)
+			log.Warn().Err(err).Str("role", r.code).Msg("seed role")
 		}
 	}
 	// 内置匿名账号：完全公开模式下未登录写操作回落的身份；display_name=匿名，
 	// 角色 viewer（只读角色，实际写操作由公开度模式放行）。预置 password 为空（不可登录）。
 	if err := s.ensureUser(AnonUsername, "", "匿名", roleTableViewer); err != nil {
-		log.Printf("seed anonymous user: %v", err)
+		log.Warn().Err(err).Msg("seed anonymous user")
 	}
 	// 默认公开度
 	if err := s.SetSetting(SettingPublicMode, defaultPublicMode); err != nil {
-		log.Printf("seed public_mode: %v", err)
+		log.Warn().Err(err).Msg("seed public_mode")
 	}
 }
 
@@ -229,7 +228,7 @@ func (s *Store) UserCount() (int, error) {
 	return n, err
 }
 
-// Register 注册新用户。系统尚无任何真实用户时，首位注册者自动获得 admin 角色（课设引导）。
+// Register 注册新用户。系统尚无任何真实用户时，首位注册者自动获得 admin 角色（部署引导）。
 // 返回 (user, 是否为首位 admin)。
 func (s *Store) Register(username, password, displayName string) (*User, bool, error) {
 	username = strings.TrimSpace(username)

@@ -1,6 +1,7 @@
 import {
   ApartmentOutlined,
   AppstoreOutlined,
+  BarChartOutlined,
   BellOutlined,
   CalendarOutlined,
   CheckCircleOutlined,
@@ -23,6 +24,7 @@ const VIEW_OPTIONS: { value: View; label: string; icon: React.ReactNode }[] = [
   { value: 'board', label: '看板', icon: <AppstoreOutlined /> },
   { value: 'graph', label: '依赖图', icon: <ApartmentOutlined /> },
   { value: 'calendar', label: '日历', icon: <CalendarOutlined /> },
+  { value: 'stats', label: '统计', icon: <BarChartOutlined /> },
 ]
 
 export default function TopBar() {
@@ -80,7 +82,7 @@ export default function TopBar() {
   }
 
   const onViewChange = (v: View) => {
-    // 回收站/个人中心等非管理视图不允许 viewer 直达
+    // 回收站/用户管理/设置等管理视图不允许 viewer 直达
     if (v === 'trash' || v === 'users' || v === 'settings') return
     setView(v)
   }
@@ -216,7 +218,7 @@ export default function TopBar() {
             }
             setNewTaskOpen(true)
           }}
-          disabled={view === 'trash' || view === 'users' || view === 'settings' || (!writable && !!user)}
+          disabled={view === 'trash' || view === 'users' || view === 'settings' || view === 'stats' || (!writable && !!user)}
         >
           新建任务
         </Button>

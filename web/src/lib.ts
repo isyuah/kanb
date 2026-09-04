@@ -61,7 +61,7 @@ export function isBlocked(t: Task): boolean {
   return t.deps.some((d) => d.status !== 'done')
 }
 
-/** 任务是否属于当前用户认领（优先 userId，兼容旧 claimer 字符串数据） */
+/** 任务是否属于当前用户认领（优先 userId，兜底按认领人名匹配） */
 export function isMine(t: Task, me: User | null): boolean {
   if (!me) return false
   if (t.claims.some((c) => c.userId === me.id)) return true

@@ -100,7 +100,7 @@ func TestUpdateSelfPassword(t *testing.T) {
 }
 
 // TestCascadeDelete 外键级联：彻底删除任务后 claims/progress/deps/task_tags 无孤儿。
-// 这是 v1「FK 声明未启用致孤儿」的回归护栏（OpenStore 已 PRAGMA foreign_keys=ON）。
+// 回归护栏：OpenStore 必须真正启用 PRAGMA foreign_keys=ON（声明不启用会留孤儿）。
 func TestCascadeDelete(t *testing.T) {
 	s := newTestStore(t)
 	alice := reg(t, s, "alice")
@@ -127,7 +127,7 @@ func TestCascadeDelete(t *testing.T) {
 	if err := s.AddDep(t1.ID, t2.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.setTaskTags(nil, t1.ID, []string{"课设", "后端"}); err != nil {
+	if err := s.setTaskTags(nil, t1.ID, []string{"测试", "后端"}); err != nil {
 		t.Fatal(err)
 	}
 	// 物理删除 t1
@@ -247,5 +247,99 @@ func TestSoftDeleteTrash(t *testing.T) {
 	}
 	if err := s.DeleteTask(t1.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestStatsAggregation 统计聚合：跨表 GROUP BY/AVG 结果正确（状态分布/标签分布/
+// 成员工作量/逾期数），软删与归档任务不污染统计。
+func TestStatsAggregation(t *testing.T) {
+	s := newTestStore(t)
+	alice := reg(t, s, "alice")
+	bob := reg(t, s, "bob")
+	ts := time.Now().UTC().Format(time.RFC3339)
+	mk := func(title, status string, tags []string, due string) *Task {
+		tk := Task{ID: newID(), Title: title, Status: Status(status), Position: 1, DueDate: nil, Tags: tags, CreatedAt: ts, UpdatedAt: ts}
+		if due != "" {
+			tk.DueDate = &due
+		}
+		created, err := s.CreateTask(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	past := time.Now().UTC().AddDate(0, 0, -3).Format("2006-01-02")
+	future := time.Now().UTC().AddDate(0, 0, 3).Format("2006-01-02")
+
+	t1 := mk("任务A", "todo", []string{"后端"}, future)      // alice 创建
+	t2 := mk("任务B", "in_progress", []string{"后端", "性能"}, "") // 逾期用
+	t3 := mk("任务C", "done", []string{"前端"}, "")          // 无认领已完成
+
+	// 认领与进度
+	if err := s.AddClaim(t1.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddClaim(t2.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddClaim(t2.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	// 两个认领者对 t2 各自报进度 50 / 100
+	for _, p := range []Progress{
+		{ID: newID(), TaskID: t2.ID, UserID: alice.ID, Percent: 50, Text: "", CreatedAt: ts, UpdatedAt: ts},
+		{ID: newID(), TaskID: t2.ID, UserID: bob.ID, Percent: 100, Text: "", CreatedAt: ts, UpdatedAt: ts},
+	} {
+		if err := s.AddProgress(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// t2 无截止但设为进行中；造一条逾期：给 t1 改 past 截止
+	if err := s.UpdateTask(Task{ID: t1.ID, Title: t1.Title, Status: StatusTodo, Position: 1, DueDate: &past, Archived: false, Tags: []string{"后端"}, UpdatedAt: ts}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := s.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TaskTotal != 3 || st.Todo != 1 || st.InProgress != 1 || st.Done != 1 {
+		t.Fatalf("状态分布错误: %+v", st)
+	}
+	if st.Overdue != 1 {
+		t.Fatalf("逾期计数错误: %d", st.Overdue)
+	}
+	// 平均进度 = (50+100)/2 = 75（认领者进度平均；无认领任务不计）
+	if st.AvgTaskPct != 75 {
+		t.Fatalf("avg pct = %v, want 75", st.AvgTaskPct)
+	}
+	// 成员工作量：alice 2 任务 (50+50)/2=50 因 t1 无进度只算 t2 的 50；bob 1 任务 100
+	if len(st.ByMember) != 2 {
+		t.Fatalf("成员数=%d, want 2: %+v", len(st.ByMember), st.ByMember)
+	}
+	for _, m := range st.ByMember {
+		if m.UserName == "Alice" && (m.TaskCount != 2 || m.AvgPct != 50) {
+			t.Fatalf("alice workload=%+v, want 2 tasks avg 50", m)
+		}
+		if m.UserName == "Bob" && (m.TaskCount != 1 || m.AvgPct != 100) {
+			t.Fatalf("bob workload=%+v, want 1 task avg 100", m)
+		}
+	}
+	// 标签分布：后端2、前端1、性能1
+	tagByName := map[string]int{}
+	for _, tg := range st.ByTag {
+		tagByName[tg.Tag] = tg.Count
+	}
+	if tagByName["后端"] != 2 || tagByName["前端"] != 1 || tagByName["性能"] != 1 {
+		t.Fatalf("标签分布错误: %+v", tagByName)
+	}
+	// 归档不污染统计
+	t3.Archived = true
+	if err := s.UpdateTask(Task{ID: t3.ID, Title: t3.Title, Status: StatusDone, Position: 1, Archived: true, UpdatedAt: ts}); err != nil {
+		t.Fatal(err)
+	}
+	st2, _ := s.Stats()
+	if st2.TaskTotal != 2 || st2.Archived != 1 {
+		t.Fatalf("归档后统计错误: total=%d archived=%d", st2.TaskTotal, st2.Archived)
 	}
 }

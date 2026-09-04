@@ -1,5 +1,5 @@
 # Go
-server/kanb-server.exe
+server/*.exe
 server/*.db
 server/webdist/
 

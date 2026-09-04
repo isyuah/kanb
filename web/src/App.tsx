@@ -18,6 +18,7 @@ import CalendarPage from './pages/CalendarPage'
 import TrashPage from './pages/TrashPage'
 import UsersPage from './pages/UsersPage'
 import SettingsPage from './pages/SettingsPage'
+import StatsPage from './pages/StatsPage'
 
 const { Content } = Layout
 
@@ -44,6 +45,8 @@ export default function App() {
         return <DepGraph />
       case 'calendar':
         return <CalendarPage />
+      case 'stats':
+        return <StatsPage />
       case 'trash':
         return isAdmin(user) || (user && user.role === 'member') ? (
           <TrashPage />

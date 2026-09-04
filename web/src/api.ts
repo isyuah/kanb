@@ -3,6 +3,7 @@ import type {
   AuthResult,
   ProgressEntry,
   Settings,
+  Stats,
   Task,
   TaskInput,
   TaskPatch,
@@ -176,6 +177,9 @@ export const api = {
     }),
 
   activities: (limit = 50) => request<Activity[]>(`/activities?limit=${limit}`),
+
+  /* ---------------- 统计 ---------------- */
+  stats: () => request<Stats>('/stats'),
 
   /* ---------------- 回收站 ---------------- */
   listTrash: () => request<Task[]>('/trash'),

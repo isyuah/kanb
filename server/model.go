@@ -108,3 +108,46 @@ type TaskInput struct {
 	DueDate *string  `json:"dueDate"`
 	Tags    []string `json:"tags"`
 }
+
+// ---- 统计（/api/stats）----
+
+// TaskStat 状态计数等单值结构。
+type TaskStat struct {
+	Status string `json:"status"` // todo | in_progress | done
+	Count  int    `json:"count"`
+}
+
+type TagStat struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// CreatorStat 按创建人分组的任务数（不含匿名/软删/归档）。
+type CreatorStat struct {
+	UserID   string `json:"userId,omitempty"`
+	UserName string `json:"userName,omitempty"` // displayName；无创建人（匿名）为 "匿名"
+	Count    int    `json:"count"`
+}
+
+// MemberWorkload 成员工作量：认领中的任务数与其平均进度。
+type MemberWorkload struct {
+	UserID    string  `json:"userId,omitempty"`
+	UserName  string  `json:"userName"` // displayName
+	TaskCount int     `json:"taskCount"`
+	AvgPct    float64 `json:"avgPct"` // 该成员所有进度记录的平均值（0-100）
+}
+
+// Stats 看板统计总览。
+type Stats struct {
+	TaskTotal    int              `json:"taskTotal"`    // 未删未归档任务总数
+	Todo         int              `json:"todo"`
+	InProgress   int              `json:"inProgress"`
+	Done         int              `json:"done"`
+	Overdue      int              `json:"overdue"`      // 已逾期且未完成
+	Archived     int              `json:"archived"`     // 归档任务数
+	AvgTaskPct   float64          `json:"avgTaskPct"`   // 全板任务平均进度（0-100，按认领者进度平均）
+	ByStatus     []TaskStat       `json:"byStatus"`
+	ByTag        []TagStat        `json:"byTag"`
+	ByCreator    []CreatorStat    `json:"byCreator"`
+	ByMember     []MemberWorkload `json:"byMember"` // 仅认领过任务的成员
+}

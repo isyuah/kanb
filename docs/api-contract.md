@@ -1,6 +1,6 @@
-# Kanb v2 API 契约（课设二期）
+# Kanb API 契约
 
-> 后端实现与前端调用共同遵守。改动需主代理确认。
+> 后端实现与前端调用共同遵守的接口约定。
 
 ## 认证
 
@@ -65,13 +65,13 @@
 - `POST /api/trash/{id}/restore` → `200 Task`（清 deleted_at）
 - `DELETE /api/trash/{id}` → `204`（彻底物理删除 + 级联；admin 或创建者）
 
-## 认领 / 进度 / 依赖（与 v1 同路径）
+## 认领 / 进度 / 依赖
 
 - `POST|DELETE /api/tasks/{id}/claim`
 - `POST /api/tasks/{id}/progress` body `{ percent, text }`
 - `PUT|DELETE /api/progress/{pid}`（仅本人，403 兜底）
 - `POST /api/tasks/{id}/deps` body `{ depId }`；`DELETE /api/tasks/{id}/deps/{depId}`
-- `PUT /api/tasks/reorder` body `{ status, ids }`（同 v1）
+- `PUT /api/tasks/reorder` body `{ status, ids }`
 
 ## 动态
 
@@ -80,6 +80,22 @@
   { id, action, target, targetId, taskTitle, userId, authorName, createdAt }
   ```
   authorName = displayName；用户已注销/匿名 → null
+
+## 统计（看板总览）
+
+- `GET /api/stats` → Stats（只读，经 gateRead 放行）：
+  ```
+  {
+    taskTotal, todo, inProgress, done, overdue, archived, avgTaskPct,
+    byStatus:  [{ status, count }],
+    byTag:     [{ tag, count }],
+    byCreator: [{ userId?, userName?, count }],
+    byMember:  [{ userId?, userName, taskCount, avgPct }]
+  }
+  ```
+  - 范围：未删除且未归档任务；逾期 = 未完成且 dueDate < 今日。
+  - avgTaskPct：所有进度记录 percent 的平均（0-100）。
+  - byMember：仅统计认领过任务的用户，avgPct 为该用户全部进度记录均值。
 
 ## 系统设置（admin）
 

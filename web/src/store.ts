@@ -11,8 +11,8 @@ import type {
 } from './types'
 
 const USER_KEY = 'kanb.user'
-const TASKS_KEY = 'kanb.tasks.cache.v1'
-const ACT_KEY = 'kanb.activities.cache.v1'
+const TASKS_KEY = 'kanb.tasks.cache'
+const ACT_KEY = 'kanb.activities.cache'
 
 function loadUser(): User | null {
   try {

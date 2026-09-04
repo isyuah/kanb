@@ -31,7 +31,7 @@ export interface Dep {
 export interface Claim {
   id: string
   taskId: string
-  /** 认领人（displayName，兼容旧数据） */
+  /** 认领人（displayName） */
   claimer: string
   /** 认领人用户 id（匿名可空） */
   userId?: string | null
@@ -79,7 +79,7 @@ export interface Activity {
   target: string
   targetId: string
   taskTitle: string
-  /** 历史展示名（兼容旧数据；v1 字段，可能缺失） */
+  /** 操作人展示名（老数据缺失时用 authorName） */
   author?: string | null
   /** 用户展示名；用户已注销/匿名 → null */
   authorName: string | null
@@ -89,6 +89,45 @@ export interface Activity {
 
 export interface Settings {
   publicMode: PublicMode
+}
+
+/* ---------------- 统计 ---------------- */
+
+export interface TaskStat {
+  status: Status
+  count: number
+}
+
+export interface TagStat {
+  tag: string
+  count: number
+}
+
+export interface CreatorStat {
+  userId?: string
+  userName?: string
+  count: number
+}
+
+export interface MemberWorkload {
+  userId?: string
+  userName: string
+  taskCount: number
+  avgPct: number
+}
+
+export interface Stats {
+  taskTotal: number
+  todo: number
+  inProgress: number
+  done: number
+  overdue: number
+  archived: number
+  avgTaskPct: number
+  byStatus: TaskStat[]
+  byTag: TagStat[]
+  byCreator: CreatorStat[]
+  byMember: MemberWorkload[]
 }
 
 export interface TaskInput {

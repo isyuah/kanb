@@ -14,7 +14,7 @@
 - 团队动态、SSE 多端实时同步；操作自动留痕（谁 + 何时）
 - 数据库满足 3NF：用户实体化、任务-标签关联表、外键真实启用、审计快照设计，见 `docs/db-design.md`
 - **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖，见 `docs/mcp.md`
-- 接口文档见 `docs/api.md` 与 `docs/api-v2-contract.md`
+- 接口文档见 `docs/api.md` 与 `docs/api-contract.md`
 
 ## 快速开始（开发）
 
@@ -65,6 +65,7 @@ cd ../server && go build -o kanb-server.exe .
 | PUT/DELETE | /api/progress/{pid} | 修改/删除自己的进度记录 |
 | POST/DELETE | /api/tasks/{id}/deps[/{depId}] | 添加/移除依赖（防成环） |
 | GET | /api/activities | 操作动态 |
+| GET | /api/stats | 看板统计总览（状态/标签/成员工作量/逾期） |
 | GET | /api/events | SSE 变更推送 |
 
-鉴权：登录后请求携带 `Authorization: Bearer <token>`（详见 `docs/api-v2-contract.md`）。
+鉴权：登录后请求携带 `Authorization: Bearer <token>`（详见 `docs/api-contract.md`）。

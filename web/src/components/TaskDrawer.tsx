@@ -46,7 +46,7 @@ import { avatarStyle, fmtTime } from '../lib'
 
 const { Text } = Typography
 
-/** 认领归属：优先 userId，兼容旧 claimer 字符串数据 */
+/** 认领归属：优先 userId，兜底按认领人名匹配 */
 function claimIsMine(c: Claim, me: User | null): boolean {
   if (!me) return false
   if (c.userId) return c.userId === me.id

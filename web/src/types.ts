@@ -51,6 +51,18 @@ export interface ProgressEntry {
   updatedAt: string
 }
 
+/** 任务评论/回复。parentId 为空 = 顶层评论 */
+export interface Comment {
+  id: string
+  taskId: string
+  userId?: string | null
+  parentId?: string
+  author: string
+  content: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Task {
   id: string
   title: string

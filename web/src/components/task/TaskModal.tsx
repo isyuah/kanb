@@ -17,6 +17,7 @@ import {
 import {
   CheckOutlined,
   ClockCircleOutlined,
+  CommentOutlined,
   DeleteOutlined,
   EditOutlined,
   FlagOutlined,
@@ -35,6 +36,7 @@ import { claimIsMine, SectionTitle, statusColor, statusLabel, WriteGuard } from 
 import { ContentSection } from './ContentSection'
 import { DepsSection } from './DepsSection'
 import { ProgressSection } from './ProgressSection'
+import { CommentsSection } from './CommentsSection'
 import { ActivitySection } from './ActivitySection'
 
 const { Text } = Typography
@@ -55,7 +57,7 @@ export default function TaskModal() {
       open={open}
       onCancel={close}
       footer={null}
-      width={1120}
+      width={1320}
       destroyOnHidden
       style={{ top: 24 }}
       styles={{
@@ -304,11 +306,11 @@ function TaskDetailBody({
         </Space>
       </div>
 
-      {/* 主体：左主栏（内容/进度）+ 右辅栏（认领/依赖/时间线） */}
+      {/* 主体三栏：左=内容/进度，中=评论，右=认领/依赖/时间线 */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(0, 7fr) minmax(280px, 4fr)',
+          gridTemplateColumns: 'minmax(0, 5fr) minmax(300px, 4fr) minmax(0, 3fr)',
           gap: 0,
           flex: 1,
           minHeight: 0,
@@ -332,6 +334,21 @@ function TaskDetailBody({
             <SectionTitle icon={<ReloadOutlined />} title="进度记录" />
             <ProgressSection task={task} user={user} writable={writable} onChanged={onChanged} />
           </div>
+        </div>
+
+        {/* 中栏：评论（列表滚动 + 输入常驻） */}
+        <div
+          style={{
+            minWidth: 0,
+            minHeight: 0,
+            padding: '16px 20px',
+            borderRight: '1px solid rgba(31,36,48,0.06)',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <SectionTitle icon={<CommentOutlined />} title="评论" />
+          <CommentsSection taskId={task.id} user={user} writable={writable} />
         </div>
 
         <div

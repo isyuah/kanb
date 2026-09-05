@@ -1,6 +1,7 @@
 import type {
   Activity,
   AuthResult,
+  Comment,
   ProgressEntry,
   Settings,
   Stats,
@@ -181,6 +182,21 @@ export const api = {
   /** 某任务完整操作时间线（后端按 target_id 过滤，非全局截断） */
   taskActivities: (taskId: string, limit = 200) =>
     request<Activity[]>(`/tasks/${taskId}/activities?limit=${limit}`),
+
+  /* ---------------- 评论 ---------------- */
+  listComments: (taskId: string) => request<Comment[]>(`/tasks/${taskId}/comments`),
+  addComment: (taskId: string, content: string, parentId?: string) =>
+    request<Comment>(`/tasks/${taskId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ content, parentId }),
+    }),
+  updateComment: (commentId: string, content: string) =>
+    request<Comment>(`/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    }),
+  deleteComment: (commentId: string) =>
+    request<void>(`/comments/${commentId}`, { method: 'DELETE' }),
 
   /* ---------------- 统计 ---------------- */
   stats: () => request<Stats>('/stats'),

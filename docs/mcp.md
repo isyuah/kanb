@@ -1,6 +1,6 @@
 # Kanb MCP Server — 让 AI 直接安排任务
 
-MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Claude Desktop、Codex、Cursor、其他 MCP 客户端）。AI 可以列任务、建任务、认领、报进度、设依赖，全程以你指定的名字留痕。
+MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Claude Desktop、Codex、Cursor、其他 MCP 客户端）。AI 可以列任务、建任务、认领、报进度、设依赖、发评论，操作以登录账号身份留痕（见下方「身份认证」；匿名模式下显示为「匿名」）。
 
 ## 快速开始
 
@@ -13,6 +13,19 @@ MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Cl
    cd mcp && go build -o kanb-mcp.exe .
    ```
 3. 在客户端配置中注册（见下）。`-base` 可指向其他地址/端口。
+
+## 身份认证
+
+MCP 默认匿名运行（写操作需看板为 open 公开模式）。要让操作**以真实用户身份留痕**（任意公开度均可写、审计归属真人、评论编辑/删除权限正确），配置以下凭据之一：
+
+| 方式 | 配置 | 说明 |
+|---|---|---|
+| 账号密码（推荐） | 环境变量 `KANB_USERNAME` + `KANB_PASSWORD` | 启动时自动登录换 token（存内存不落盘）；**token 失效（过期/被撤销）时自动重新登录并重放请求，最多一次** |
+| 会话 token | 环境变量 `KANB_TOKEN` 或启动参数 `-token <token>` | 直接使用已有会话（可从看板登录响应或浏览器 localStorage `kanb.token` 获取）；失效后若同时配了账号密码会自动续期，否则需手动更换 |
+
+优先级：`-token` > `KANB_TOKEN` > `KANB_USERNAME`/`KANB_PASSWORD`。无任何凭据时回落匿名模式。
+
+> 安全建议：给 AI 配**专用低权账号**（member 即可，勿用 admin）；撤销访问 = 在用户管理停用该账号（无需改 MCP 配置）。密码明文存在于进程环境——与看板同机部署的可信场景下可接受；跨机部署请改用 `-token` 且不要配账号密码。
 
 ## 工具清单
 

@@ -24,13 +24,42 @@ import (
 var (
 	kanbBase = "http://localhost:8400/api"
 	httpCli  = &http.Client{Timeout: 30 * time.Second}
+
+	// 认证状态（MCP 单进程 stdio 串行，无并发无需锁）。
+	// authToken 来自：-token flag > KANB_TOKEN env > KANB_USERNAME/PASSWORD 启动登录。
+	authToken = ""
+	// env 凭据：KANB_USERNAME + KANB_PASSWORD，供启动登录与 401 自动续期。
+	envUser = ""
+	envPass = ""
 )
 
 func main() {
 	base := flag.String("base", "", "kanb REST base URL, default http://localhost:8400/api")
+	tokenFlag := flag.String("token", "", "bearer token（可选；优先级高于 KANB_TOKEN 与账号密码）")
 	flag.Parse()
 	if *base != "" {
 		kanbBase = strings.TrimSuffix(*base, "/")
+	}
+
+	// 认证来源优先级：-token flag > KANB_TOKEN > KANB_USERNAME + KANB_PASSWORD
+	envUser = os.Getenv("KANB_USERNAME")
+	envPass = os.Getenv("KANB_PASSWORD")
+	switch {
+	case *tokenFlag != "":
+		authToken = *tokenFlag
+		log.Printf("auth: 使用 -token 提供的会话")
+	case os.Getenv("KANB_TOKEN") != "":
+		authToken = os.Getenv("KANB_TOKEN")
+		log.Printf("auth: 使用 KANB_TOKEN 环境变量")
+	case envUser != "" && envPass != "":
+		if err := login(envUser, envPass); err != nil {
+			// 启动登录失败：不阻塞启动，降级匿名运行并告警（写操作需 open 模式）
+			log.Printf("WARN auth: 启动登录失败（将以匿名运行，写操作需看板 open 模式）: %v", err)
+		} else {
+			log.Printf("auth: 已用 KANB_USERNAME/KANB_PASSWORD 登录")
+		}
+	default:
+		log.Printf("auth: 无凭据，以匿名运行（写操作需看板 open 模式）")
 	}
 
 	s := server.NewMCPServer("kanb", "0.1.0",
@@ -47,9 +76,59 @@ func main() {
 	_ = os.Stdout
 }
 
+// login 用账号密码换 token（POST /api/auth/login），成功写入 authToken。
+func login(username, password string) error {
+	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
+	req, err := http.NewRequest(http.MethodPost, kanbBase+"/auth/login", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpCli.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	if out.Token == "" {
+		return fmt.Errorf("登录响应缺少 token")
+	}
+	authToken = out.Token
+	return nil
+}
+
 // ---- kanb REST helpers ----
 
+// kanbReq 发请求：带当前 Bearer token；401 时若持有 env 账号密码则重登并重放一次。
+// 重放仅一次，避免登录失败/凭据错误时死循环。auth/login 自身不参与续期。
 func kanbReq(ctx context.Context, method, path string, author string, body any) (int, []byte, error) {
+	code, data, err := doReq(ctx, method, path, author, body)
+	if err != nil {
+		return code, data, err
+	}
+	if code == 401 && envUser != "" && envPass != "" && !strings.HasPrefix(path, "/auth/login") {
+		if lerr := login(envUser, envPass); lerr != nil {
+			return code, data, fmt.Errorf("HTTP 401 且自动重登失败: %v", lerr)
+		}
+		log.Printf("auth: 会话失效，已用账号密码重新登录并重放请求")
+		return doReq(ctx, method, path, author, body)
+	}
+	return code, data, nil
+}
+
+func doReq(ctx context.Context, method, path string, author string, body any) (int, []byte, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -63,6 +142,9 @@ func kanbReq(ctx context.Context, method, path string, author string, body any) 
 		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 	if author != "" {
 		req.Header.Set("X-Author", url.QueryEscape(author)) // 中文名需编码
 	}

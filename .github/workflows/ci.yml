@@ -36,9 +36,25 @@ jobs:
     name: Go 后端 (vet + test, 含前端产物)
     needs: frontend
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kanb
+          POSTGRES_PASSWORD: kanb
+          POSTGRES_DB: kanbtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kanb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: server
+    env:
+      KANB_TEST_DATABASE_URL: postgres://kanb:kanb@localhost:5432/kanbtest?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -52,8 +68,8 @@ jobs:
           path: server/webdist
       - name: go vet
         run: go vet ./...
-      - name: go test
-        run: go test ./...
+      - name: go test（SQLite + PostgreSQL 双库 contract）
+        run: go test -count=1 ./...
 
   mcp:
     name: MCP 服务 (vet + build)

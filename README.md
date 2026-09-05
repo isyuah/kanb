@@ -14,6 +14,7 @@ Kanb 是一个面向小团队的轻量任务看板：**Go 单二进制后端 + R
 - **权限**：注册/登录 + RBAC 三角色（管理员/成员/访客）；站点可设为私有 / 公开只读 / 完全公开
 - **管理**：回收站（软删可恢复）、归档、日历视图、统计总览、个人中心
 - **AI 接入**：内置 MCP server，Claude / Codex / Cursor 等客户端可直接安排任务、报进度、发评论
+- **多数据库**：本地 SQLite 零配置；设 `KANB_DATABASE_URL` 即切云端 PostgreSQL（Render/Supabase/Neon），见 `docs/multi-db.md`
 
 ## 快速开始
 
@@ -92,7 +93,7 @@ cd mcp && go build -o kanb-mcp.exe .
 
 ## 技术栈
 
-后端 Go（net/http + modernc.org/sqlite + SSE）· 前端 React 19 / TypeScript / Ant Design 6 / Vite · 存储 SQLite 单文件 · CI GitHub Actions
+后端 Go（net/http + SQLite/PostgreSQL + SSE）· 前端 React 19 / TypeScript / Ant Design 6 / Vite · 存储 SQLite 单文件或云端 PostgreSQL · CI GitHub Actions
 
 ## 文档
 
@@ -101,4 +102,5 @@ cd mcp && go build -o kanb-mcp.exe .
 | [`docs/db-design.md`](docs/db-design.md) | 数据库设计：12 表 schema、3NF 论证、约束与索引 |
 | [`docs/design-notes.md`](docs/design-notes.md) | 架构 / RBAC 权限矩阵 / 公开度 / 设计取舍与踩坑记录 |
 | [`docs/api.md`](docs/api.md) · [`docs/api-contract.md`](docs/api-contract.md) | REST 接口说明与请求/响应契约 |
+| [`docs/multi-db.md`](docs/multi-db.md) | 多数据库支持：SQLite / PostgreSQL 选择、方言适配与测试 |
 | [`docs/mcp.md`](docs/mcp.md) | MCP server 工具清单与客户端配置 |

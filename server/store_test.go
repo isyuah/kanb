@@ -1,21 +1,64 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// 每个测试独立临时库。
+// newTestStore 每个测试独立库。
+// 默认 SQLite 临时文件；设 KANB_TEST_DATABASE_URL 时改用 PostgreSQL
+// （同一套 contract 测试在双库上跑，CI 的 postgres job 设该变量）。
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	var (
+		s   *Store
+		err error
+	)
+	if url := os.Getenv("KANB_TEST_DATABASE_URL"); url != "" {
+		// PG：每测试一个独立 schema（连接池安全：DSN search_path 让每条连接自动指向该 schema）。
+		schemaName := "t" + newID() // 纯数字 id 前加字母前缀
+		admin, err2 := OpenPostgres(url)
+		if err2 != nil {
+				t.Fatal(err2)
+		}
+		// 用独立单连接建 schema（避免连接池 search_path 未生效的连接执行 DDL）
+		conn, err2 := admin.db.Conn(context.Background())
+		if err2 != nil {
+			admin.Close()
+			t.Fatal(err2)
+		}
+		if _, err2 := conn.ExecContext(context.Background(), `CREATE SCHEMA `+schemaName); err2 != nil {
+			conn.Close()
+			admin.Close()
+			t.Fatal(err2)
+		}
+		conn.Close()
+		admin.Close()
+		// 正式 Store：DSN 带 search_path，所有连接自动落在该 schema
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		s, err = OpenPostgres(url + sep + "search_path=" + schemaName)
+		t.Cleanup(func() {
+			if s != nil {
+				s.db.Exec(`DROP SCHEMA IF EXISTS ` + schemaName + ` CASCADE`)
+				s.Close()
+			}
+		})
+	} else {
+		s, err = OpenStore(filepath.Join(t.TempDir(), "test.db"))
+		t.Cleanup(func() { s.Close() })
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Seed()
-	t.Cleanup(func() { s.Close() })
 	return s
 }
 
@@ -143,7 +186,7 @@ func TestCascadeDelete(t *testing.T) {
 		"activities": "target_id",
 	} {
 		var n int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM `+tbl+` WHERE `+col+`=?`, t1.ID).Scan(&n); err != nil && err != sql.ErrNoRows {
+		if err := s.queryRow(s.db, `SELECT COUNT(*) FROM `+tbl+` WHERE `+col+`=?`, t1.ID).Scan(&n); err != nil && err != sql.ErrNoRows {
 			t.Fatalf("query %s: %v", tbl, err)
 		}
 		// activities 无 FK（审计保留），允许残留；其余必须 0

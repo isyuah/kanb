@@ -2,13 +2,18 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/jackc/pgx/v5/stdlib" // 注册 "pgx" 驱动
 	_ "modernc.org/sqlite"
 )
 
@@ -51,13 +56,6 @@ CREATE TABLE IF NOT EXISTS tags (
   name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS task_tags (
-  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  tag_id  TEXT NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
-  PRIMARY KEY (task_id, tag_id)
-);
-CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag_id);
-
 CREATE TABLE IF NOT EXISTS tasks (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL,
@@ -75,6 +73,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status    ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_archived  ON tasks(archived);
 CREATE INDEX IF NOT EXISTS idx_tasks_deleted   ON tasks(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_createdby ON tasks(created_by);
+
+CREATE TABLE IF NOT EXISTS task_tags (
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  tag_id  TEXT NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+  PRIMARY KEY (task_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag_id);
 
 CREATE TABLE IF NOT EXISTS claims (
   id         TEXT PRIMARY KEY,
@@ -137,10 +142,6 @@ CREATE TABLE IF NOT EXISTS settings (
 // 公开度模式默认值（settings 表无记录时生效，注册时也写入）。
 const defaultPublicMode = ModePrivate
 
-type Store struct {
-	db *sql.DB
-}
-
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // newID 生成全局唯一主键：纳秒时间戳 + 进程内原子序号。
@@ -158,31 +159,151 @@ func newID() string {
 	return fmt.Sprintf("%d%d", time.Now().UnixNano(), n%1000000)
 }
 
-func OpenStore(path string) (*Store, error) {
-	if dir := filepath.Dir(path); dir != "" {
+// DBKind 标识底层数据库方言。SQLite 与 PostgreSQL 的 SQL 共享
+// （? 占位符统一书写，执行时经 bind 翻译），仅少数点分叉。
+type DBKind uint8
+
+const (
+	KindSQLite DBKind = iota
+	KindPostgres
+)
+
+type Store struct {
+	db   *sql.DB
+	kind DBKind
+}
+
+// OpenSQLite 打开 SQLite 文件库。外键经 DSN _pragma 在每个连接初始化时自动启用
+// （PRAGMA 为连接级设置，Exec 一次只作用于单条连接，放 DSN 才真正可靠）。
+func OpenSQLite(path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // serialize writes; sqlite file lock simplicity
-	// 外键约束必须真正启用：连接层强制 PRAGMA foreign_keys=ON，
-	// 否则 REFERENCES 声明的级联与约束不生效，删除任务会遗留孤儿数据。
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	db.SetMaxIdleConns(1)
+	return openStore(db, KindSQLite)
+}
+
+// OpenPostgres 连接远程 PostgreSQL。连接池大小属部署配置而非方言规定，
+// 默认 5/2，可用 KANB_PG_MAX_OPEN / KANB_PG_MAX_IDLE 覆盖。
+func OpenPostgres(dsn string) (*Store, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	maxOpen := envInt("KANB_PG_MAX_OPEN", 5)
+	maxIdle := envInt("KANB_PG_MAX_IDLE", 2)
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	return openStore(db, KindPostgres)
+}
+
+func openStore(db *sql.DB, kind DBKind) (*Store, error) {
+	s := &Store{db: db, kind: kind}
+	if _, err := db.Exec(s.bind(schema)); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return s, nil
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// OpenStore 兼容入口：SQLite 文件路径（原签名，main/测试沿用）。
+func OpenStore(path string) (*Store, error) {
+	return OpenSQLite(path)
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// ---- 方言适配 ----
+
+// bind 把统一书写的 ? 占位符翻译为当前方言（PG → $1/$2…；SQLite 原样）。
+func (s *Store) bind(q string) string {
+	if s.kind == KindPostgres {
+		return sqlx.Rebind(sqlx.DOLLAR, q)
+	}
+	return q
+}
+
+// dbx 覆盖 *sql.DB 与 *sql.Tx 的查询接口，使 exec/query/queryRow 可统一收口。
+type dbx interface {
+	Exec(string, ...any) (sql.Result, error)
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+func (s *Store) exec(x dbx, q string, args ...any) (sql.Result, error) {
+	if isNilDBX(x) {
+		x = s.db
+	}
+	return x.Exec(s.bind(q), args...)
+}
+func (s *Store) query(x dbx, q string, args ...any) (*sql.Rows, error) {
+	if isNilDBX(x) {
+		x = s.db
+	}
+	return x.Query(s.bind(q), args...)
+}
+func (s *Store) queryRow(x dbx, q string, args ...any) *sql.Row {
+	if isNilDBX(x) {
+		x = s.db
+	}
+	return x.QueryRow(s.bind(q), args...)
+}
+
+// isNilDBX 识别「类型化 nil 指针装入 interface」的经典陷阱
+// （nil *sql.Tx 赋给 dbx 后 x != nil，直接调用会 nil 解引用）。
+func isNilDBX(x dbx) bool {
+	if x == nil {
+		return true
+	}
+	switch v := x.(type) {
+	case *sql.DB:
+		return v == nil
+	case *sql.Tx:
+		return v == nil
+	}
+	return false
+}
+
+// isUniqueViolation 识别唯一/主键冲突（按方言错误类型；errors.As 兼容 %w 包裹）。
+func (s *Store) isUniqueViolation(err error) bool {
+	switch s.kind {
+	case KindSQLite:
+		var ce interface{ Code() int }
+		if errors.As(err, &ce) {
+			switch ce.Code() {
+			case 1555, 2067: // SQLITE_CONSTRAINT_PRIMARYKEY / SQLITE_CONSTRAINT_UNIQUE
+				return true
+			}
+		}
+		return false
+	case KindPostgres:
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			return pgErr.Code == "23505"
+		}
+		return false
+	}
+	return false
+}
 
 func idsAny(ids []string) []any {
 	out := make([]any, len(ids))
@@ -202,7 +323,7 @@ func (s *Store) queryTasks(where string, args ...any) ([]Task, error) {
 		q += ` WHERE ` + where
 	}
 	q += ` ORDER BY t.position ASC, t.created_at ASC`
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.query(s.db, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +361,7 @@ func (s *Store) taskTagMap(ids []string) (map[string][]string, error) {
 	}
 	in := strings.Repeat("?,", len(ids))
 	in = in[:len(in)-1]
-	rows, err := s.db.Query(`SELECT tt.task_id, tg.name FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.task_id IN (`+in+`) ORDER BY tt.rowid`, idsAny(ids)...)
+	rows, err := s.query(s.db, `SELECT tt.task_id, tg.name FROM task_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.task_id IN (`+in+`) ORDER BY tg.name`, idsAny(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -275,9 +396,9 @@ func (s *Store) loadRelations(tasks []Task) ([]Task, error) {
 	}
 
 	claims := map[string][]Claim{}
-	rows, err := s.db.Query(`SELECT c.id,c.task_id,c.user_id,u.display_name,c.created_at
+	rows, err := s.query(s.db, `SELECT c.id,c.task_id,c.user_id,u.display_name,c.created_at
         FROM claims c JOIN users u ON u.id=c.user_id
-        WHERE c.task_id IN (`+in+`) ORDER BY c.created_at`, anyIDs...)
+        WHERE c.task_id IN (`+in+`) ORDER BY c.created_at, c.id`, anyIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +413,7 @@ func (s *Store) loadRelations(tasks []Task) ([]Task, error) {
 	rows.Close()
 
 	progs := map[string][]Progress{}
-	rows, err = s.db.Query(`SELECT p.id,p.task_id,p.user_id,u.display_name,p.percent,p.text,p.created_at,p.updated_at
+	rows, err = s.query(s.db, `SELECT p.id,p.task_id,p.user_id,u.display_name,p.percent,p.text,p.created_at,p.updated_at
         FROM progress p JOIN users u ON u.id=p.user_id
         WHERE p.task_id IN (`+in+`) ORDER BY p.created_at DESC`, anyIDs...)
 	if err != nil {
@@ -309,7 +430,7 @@ func (s *Store) loadRelations(tasks []Task) ([]Task, error) {
 	rows.Close()
 
 	deps := map[string][]Dep{}
-	rows, err = s.db.Query(`SELECT d.task_id,d.dep_id,t.title,t.status,t.archived
+	rows, err = s.query(s.db, `SELECT d.task_id,d.dep_id,t.title,t.status,t.archived
         FROM deps d JOIN tasks t ON t.id=d.dep_id
         WHERE d.task_id IN (`+in+`) ORDER BY d.created_at`, anyIDs...)
 	if err != nil {
@@ -408,9 +529,9 @@ func (s *Store) resolveTags(tx *sql.Tx, names []string) ([]string, error) {
 		var id string
 		var qerr error
 		if tx != nil {
-			qerr = tx.QueryRow(`SELECT id FROM tags WHERE name=?`, name).Scan(&id)
+			qerr = s.queryRow(tx, `SELECT id FROM tags WHERE name=?`, name).Scan(&id)
 		} else {
-			qerr = s.db.QueryRow(`SELECT id FROM tags WHERE name=?`, name).Scan(&id)
+			qerr = s.queryRow(s.db, `SELECT id FROM tags WHERE name=?`, name).Scan(&id)
 		}
 		if qerr == nil {
 			ids = append(ids, id)
@@ -425,7 +546,7 @@ func (s *Store) resolveTags(tx *sql.Tx, names []string) ([]string, error) {
 		var inserted bool
 		for range 5 {
 			if _, err := s.exec(tx, `INSERT INTO tags (id,name) VALUES (?,?)`, newID(), name); err != nil {
-				if !isUniqueViolation(err) {
+				if !s.isUniqueViolation(err) {
 					return nil, err
 				}
 				continue // 主键撞纳秒值，换 id 重试
@@ -438,9 +559,9 @@ func (s *Store) resolveTags(tx *sql.Tx, names []string) ([]string, error) {
 		}
 		// 拿到刚插入的 id：TEXT 主键无法用 LastInsertId，按名字再查一次。
 		if tx != nil {
-			qerr = tx.QueryRow(`SELECT id FROM tags WHERE name=?`, name).Scan(&id)
+			qerr = s.queryRow(tx, `SELECT id FROM tags WHERE name=?`, name).Scan(&id)
 		} else {
-			qerr = s.db.QueryRow(`SELECT id FROM tags WHERE name=?`, name).Scan(&id)
+			qerr = s.queryRow(s.db, `SELECT id FROM tags WHERE name=?`, name).Scan(&id)
 		}
 		if qerr != nil {
 			return nil, qerr
@@ -448,26 +569,6 @@ func (s *Store) resolveTags(tx *sql.Tx, names []string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
-}
-
-func (s *Store) exec(tx *sql.Tx, q string, args ...any) (sql.Result, error) {
-	if tx != nil {
-		return tx.Exec(q, args...)
-	}
-	return s.db.Exec(q, args...)
-}
-
-// isUniqueViolation 判断 sqlite 唯一/主键冲突错误（SQLITE_CONSTRAINT_PRIMARYKEY/UNIQUE，
-// 扩展码 1555/2067；modernc 驱动返回 *sqlite.Error，含 Code() 扩展码）。
-func isUniqueViolation(err error) bool {
-	type coded interface{ Code() int }
-	if ce, ok := err.(coded); ok {
-		switch ce.Code() {
-		case 1555, 2067: // SQLITE_CONSTRAINT_PRIMARYKEY / SQLITE_CONSTRAINT_UNIQUE
-			return true
-		}
-	}
-	return false
 }
 
 // setTaskTags 整体替换任务标签（事务内可传 tx）。
@@ -480,7 +581,7 @@ func (s *Store) setTaskTags(tx *sql.Tx, taskID string, names []string) error {
 		return err
 	}
 	for _, tid := range ids {
-		if _, err := s.exec(tx, `INSERT OR IGNORE INTO task_tags (task_id,tag_id) VALUES (?,?)`, taskID, tid); err != nil {
+		if _, err := s.exec(tx, `INSERT INTO task_tags (task_id,tag_id) VALUES (?,?) ON CONFLICT(task_id,tag_id) DO NOTHING`, taskID, tid); err != nil {
 			return err
 		}
 	}
@@ -495,7 +596,7 @@ func (s *Store) CreateTask(t Task) (*Task, error) {
 	defer tx.Rollback()
 	// 新任务排到同状态列末尾
 	var maxPos float64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(position),0) FROM tasks WHERE status=? AND archived=0 AND deleted_at IS NULL`, string(t.Status)).Scan(&maxPos); err != nil {
+	if err := s.queryRow(tx, `SELECT COALESCE(MAX(position),0) FROM tasks WHERE status=? AND archived=0 AND deleted_at IS NULL`, string(t.Status)).Scan(&maxPos); err != nil {
 		return nil, err
 	}
 	t.Position = maxPos + 1
@@ -504,7 +605,7 @@ func (s *Store) CreateTask(t Task) (*Task, error) {
 	if t.CreatedBy != "" {
 		createdBy = t.CreatedBy
 	}
-	if _, err := tx.Exec(`INSERT INTO tasks (id,title,content,status,position,due_date,archived,deleted_at,created_by,created_at,updated_at)
+	if _, err := s.exec(tx, `INSERT INTO tasks (id,title,content,status,position,due_date,archived,deleted_at,created_by,created_at,updated_at)
         VALUES (?,?,?,?,?,?,0,NULL,?,?,?)`,
 		t.ID, t.Title, t.Content, string(t.Status), t.Position, t.DueDate, createdBy, t.CreatedAt, t.UpdatedAt); err != nil {
 		return nil, err
@@ -524,7 +625,7 @@ func (s *Store) UpdateTask(t Task) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE tasks SET title=?,content=?,status=?,position=?,due_date=?,archived=?,updated_at=? WHERE id=?`,
+	if _, err := s.exec(tx, `UPDATE tasks SET title=?,content=?,status=?,position=?,due_date=?,archived=?,updated_at=? WHERE id=?`,
 		t.Title, t.Content, string(t.Status), t.Position, t.DueDate, boolInt(t.Archived), t.UpdatedAt, t.ID); err != nil {
 		return err
 	}
@@ -536,57 +637,57 @@ func (s *Store) UpdateTask(t Task) error {
 
 // SoftDeleteTask 软删：置 deleted_at（幂等，已删再删直接返回）。
 func (s *Store) SoftDeleteTask(id string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET deleted_at=?, updated_at=? WHERE id=? AND deleted_at IS NULL`, now(), now(), id)
+	_, err := s.exec(s.db, `UPDATE tasks SET deleted_at=?, updated_at=? WHERE id=? AND deleted_at IS NULL`, now(), now(), id)
 	return err
 }
 
 // RestoreTask 回收站恢复：清 deleted_at。
 func (s *Store) RestoreTask(id string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET deleted_at=NULL, updated_at=? WHERE id=?`, now(), id)
+	_, err := s.exec(s.db, `UPDATE tasks SET deleted_at=NULL, updated_at=? WHERE id=?`, now(), id)
 	return err
 }
 
 // DeleteTask 物理删除（回收站彻底删除）：claims/progress/deps/task_tags 由外键 CASCADE 级联清理。
 func (s *Store) DeleteTask(id string) error {
-	_, err := s.db.Exec(`DELETE FROM tasks WHERE id=?`, id)
+	_, err := s.exec(s.db, `DELETE FROM tasks WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) TaskTitle(id string) string {
 	var title string
-	s.db.QueryRow(`SELECT title FROM tasks WHERE id=?`, id).Scan(&title)
+	s.queryRow(s.db, `SELECT title FROM tasks WHERE id=?`, id).Scan(&title)
 	return title
 }
 
 // ---- 认领 ----
 
 func (s *Store) AddClaim(taskID, userID string) error {
-	_, err := s.db.Exec(`INSERT INTO claims (id,task_id,user_id,created_at) VALUES (?,?,?,?)`, newID(), taskID, userID, now())
+	_, err := s.exec(s.db, `INSERT INTO claims (id,task_id,user_id,created_at) VALUES (?,?,?,?)`, newID(), taskID, userID, now())
 	return err
 }
 
 func (s *Store) RemoveClaim(taskID, userID string) error {
-	_, err := s.db.Exec(`DELETE FROM claims WHERE task_id=? AND user_id=?`, taskID, userID)
+	_, err := s.exec(s.db, `DELETE FROM claims WHERE task_id=? AND user_id=?`, taskID, userID)
 	return err
 }
 
 func (s *Store) ClaimExists(taskID, userID string) (bool, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM claims WHERE task_id=? AND user_id=?`, taskID, userID).Scan(&n)
+	err := s.queryRow(s.db, `SELECT COUNT(*) FROM claims WHERE task_id=? AND user_id=?`, taskID, userID).Scan(&n)
 	return n > 0, err
 }
 
 // ---- 进度 ----
 
 func (s *Store) AddProgress(p Progress) error {
-	_, err := s.db.Exec(`INSERT INTO progress (id,task_id,user_id,percent,text,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`,
+	_, err := s.exec(s.db, `INSERT INTO progress (id,task_id,user_id,percent,text,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`,
 		p.ID, p.TaskID, p.UserID, p.Percent, p.Text, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
 func (s *Store) GetProgress(id string) (*Progress, error) {
 	var p Progress
-	err := s.db.QueryRow(`SELECT p.id,p.task_id,p.user_id,COALESCE(u.display_name,''),p.percent,p.text,p.created_at,p.updated_at
+	err := s.queryRow(s.db, `SELECT p.id,p.task_id,p.user_id,COALESCE(u.display_name,''),p.percent,p.text,p.created_at,p.updated_at
         FROM progress p JOIN users u ON u.id=p.user_id WHERE p.id=?`, id).
 		Scan(&p.ID, &p.TaskID, &p.UserID, &p.Author, &p.Percent, &p.Text, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -596,12 +697,12 @@ func (s *Store) GetProgress(id string) (*Progress, error) {
 }
 
 func (s *Store) UpdateProgress(p Progress) error {
-	_, err := s.db.Exec(`UPDATE progress SET percent=?,text=?,updated_at=? WHERE id=?`, p.Percent, p.Text, p.UpdatedAt, p.ID)
+	_, err := s.exec(s.db, `UPDATE progress SET percent=?,text=?,updated_at=? WHERE id=?`, p.Percent, p.Text, p.UpdatedAt, p.ID)
 	return err
 }
 
 func (s *Store) DeleteProgress(id string) error {
-	_, err := s.db.Exec(`DELETE FROM progress WHERE id=?`, id)
+	_, err := s.exec(s.db, `DELETE FROM progress WHERE id=?`, id)
 	return err
 }
 
@@ -610,12 +711,12 @@ func (s *Store) DeleteProgress(id string) error {
 // ListComments 某任务的全部评论（含回复），按时间正序（顶层与回复交错统一按 created_at）。
 // 返回扁平列表，parent_id 由前端组装回复树。
 func (s *Store) ListComments(taskID string) ([]Comment, error) {
-	rows, err := s.db.Query(`SELECT c.id,c.task_id,COALESCE(c.user_id,''),
+	rows, err := s.query(s.db, `SELECT c.id,c.task_id,COALESCE(c.user_id,''),
         COALESCE(NULLIF(c.parent_id,''),''),COALESCE(u.display_name,'已注销'),
         c.content,c.created_at,c.updated_at
         FROM comments c LEFT JOIN users u ON u.id=c.user_id
         WHERE c.task_id = ?
-        ORDER BY c.created_at ASC`, taskID)
+        ORDER BY c.created_at ASC, c.id ASC`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -633,7 +734,7 @@ func (s *Store) ListComments(taskID string) ([]Comment, error) {
 }
 
 func (s *Store) AddComment(c Comment) error {
-	_, err := s.db.Exec(`INSERT INTO comments (id,task_id,user_id,parent_id,content,created_at,updated_at)
+	_, err := s.exec(s.db, `INSERT INTO comments (id,task_id,user_id,parent_id,content,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?)`,
 		c.ID, c.TaskID, nullStr(c.UserID), nullStr(c.ParentID), c.Content, c.CreatedAt, c.UpdatedAt)
 	return err
@@ -641,7 +742,7 @@ func (s *Store) AddComment(c Comment) error {
 
 func (s *Store) GetComment(id string) (*Comment, error) {
 	var c Comment
-	err := s.db.QueryRow(`SELECT c.id,c.task_id,COALESCE(c.user_id,''),
+	err := s.queryRow(s.db, `SELECT c.id,c.task_id,COALESCE(c.user_id,''),
         COALESCE(NULLIF(c.parent_id,''),''),COALESCE(u.display_name,'已注销'),
         c.content,c.created_at,c.updated_at
         FROM comments c LEFT JOIN users u ON u.id=c.user_id
@@ -655,13 +756,13 @@ func (s *Store) GetComment(id string) (*Comment, error) {
 }
 
 func (s *Store) UpdateComment(id, content, ts string) error {
-	_, err := s.db.Exec(`UPDATE comments SET content=?,updated_at=? WHERE id=?`, content, ts, id)
+	_, err := s.exec(s.db, `UPDATE comments SET content=?,updated_at=? WHERE id=?`, content, ts, id)
 	return err
 }
 
 // DeleteComment 物理删除评论；回复经外键 ON DELETE CASCADE 一并清除。
 func (s *Store) DeleteComment(id string) error {
-	_, err := s.db.Exec(`DELETE FROM comments WHERE id=?`, id)
+	_, err := s.exec(s.db, `DELETE FROM comments WHERE id=?`, id)
 	return err
 }
 
@@ -675,7 +776,7 @@ func (s *Store) ReorderTasks(status Status, ids []string) error {
 	}
 	defer tx.Rollback()
 	// 该状态现存（未软删）任务集合
-	rows, err := tx.Query(`SELECT id FROM tasks WHERE status=? AND archived=0 AND deleted_at IS NULL`, string(status))
+	rows, err := s.query(tx, `SELECT id FROM tasks WHERE status=? AND archived=0 AND deleted_at IS NULL`, string(status))
 	if err != nil {
 		return err
 	}
@@ -696,7 +797,7 @@ func (s *Store) ReorderTasks(status Status, ids []string) error {
 		if !exist[id] || seen[id] {
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE tasks SET position=? WHERE id=?`, pos, id); err != nil {
+		if _, err := s.exec(tx, `UPDATE tasks SET position=? WHERE id=?`, pos, id); err != nil {
 			return err
 		}
 		seen[id] = true
@@ -704,7 +805,7 @@ func (s *Store) ReorderTasks(status Status, ids []string) error {
 	}
 	for id := range exist {
 		if !seen[id] {
-			if _, err := tx.Exec(`UPDATE tasks SET position=? WHERE id=?`, pos, id); err != nil {
+			if _, err := s.exec(tx, `UPDATE tasks SET position=? WHERE id=?`, pos, id); err != nil {
 				return err
 			}
 			pos++
@@ -716,12 +817,12 @@ func (s *Store) ReorderTasks(status Status, ids []string) error {
 // ---- 依赖 ----
 
 func (s *Store) AddDep(taskID, depID string) error {
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO deps (task_id,dep_id,created_at) VALUES (?,?,?)`, taskID, depID, now())
+	_, err := s.exec(s.db, `INSERT INTO deps (task_id,dep_id,created_at) VALUES (?,?,?) ON CONFLICT(task_id,dep_id) DO NOTHING`, taskID, depID, now())
 	return err
 }
 
 func (s *Store) RemoveDep(taskID, depID string) error {
-	_, err := s.db.Exec(`DELETE FROM deps WHERE task_id=? AND dep_id=?`, taskID, depID)
+	_, err := s.exec(s.db, `DELETE FROM deps WHERE task_id=? AND dep_id=?`, taskID, depID)
 	return err
 }
 
@@ -737,7 +838,7 @@ func (s *Store) WouldCycle(taskID, depID string) (bool, error) {
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		rows, err := s.db.Query(`SELECT dep_id FROM deps WHERE task_id=?`, cur)
+		rows, err := s.query(s.db, `SELECT dep_id FROM deps WHERE task_id=?`, cur)
 		if err != nil {
 			return false, err
 		}
@@ -770,7 +871,7 @@ func (s *Store) Stats() (*Stats, error) {
 	out := &Stats{ByStatus: []TaskStat{}, ByTag: []TagStat{}, ByCreator: []CreatorStat{}, ByMember: []MemberWorkload{}}
 
 	// 总数 + 状态分布（未删未归档）
-	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 GROUP BY status`)
+	rows, err := s.query(s.db, `SELECT status, COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}
@@ -795,17 +896,17 @@ func (s *Store) Stats() (*Stats, error) {
 	rows.Close()
 
 	// 归档数
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=1`).Scan(&out.Archived); err != nil {
+	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=1`).Scan(&out.Archived); err != nil {
 		return nil, err
 	}
 	// 逾期数（未完成且 due_date < 今天）
 	today := time.Now().UTC().Format("2006-01-02")
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 AND status<>'done' AND due_date IS NOT NULL AND due_date<?`, today).Scan(&out.Overdue); err != nil {
+	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 AND status<>'done' AND due_date IS NOT NULL AND due_date<?`, today).Scan(&out.Overdue); err != nil {
 		return nil, err
 	}
 
 	// 任务平均进度：认领者的最新一条进度记录平均（无记录=0）
-	rows, err = s.db.Query(`SELECT COALESCE(AVG(p.percent),0) FROM progress p
+	rows, err = s.query(s.db, `SELECT COALESCE(AVG(p.percent),0) FROM progress p
 		JOIN tasks t ON t.id=p.task_id WHERE t.deleted_at IS NULL AND t.archived=0`)
 	if err != nil {
 		return nil, err
@@ -819,7 +920,7 @@ func (s *Store) Stats() (*Stats, error) {
 	rows.Close()
 
 	// 标签分布（仅未删未归档任务）
-	rows, err = s.db.Query(`SELECT tg.name, COUNT(*) FROM task_tags tt
+	rows, err = s.query(s.db, `SELECT tg.name, COUNT(*) FROM task_tags tt
 		JOIN tags tg ON tg.id=tt.tag_id
 		JOIN tasks t ON t.id=tt.task_id
 		WHERE t.deleted_at IS NULL AND t.archived=0
@@ -838,10 +939,10 @@ func (s *Store) Stats() (*Stats, error) {
 	rows.Close()
 
 	// 按创建人分布（匿名/无创建人计为「匿名」）
-	rows, err = s.db.Query(`SELECT COALESCE(u.display_name,'匿名'), COUNT(*) FROM tasks t
+	rows, err = s.query(s.db, `SELECT COALESCE(u.display_name,'匿名'), COUNT(*) FROM tasks t
 		LEFT JOIN users u ON u.id=t.created_by
 		WHERE t.deleted_at IS NULL AND t.archived=0
-		GROUP BY t.created_by ORDER BY COUNT(*) DESC`)
+		GROUP BY t.created_by, u.display_name ORDER BY COUNT(*) DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -856,14 +957,14 @@ func (s *Store) Stats() (*Stats, error) {
 	rows.Close()
 
 	// 成员工作量：认领任务数 + 其全部进度记录平均（无进度记录记 0 由 AVG 忽略）
-	rows, err = s.db.Query(`SELECT c.user_id, COALESCE(u.display_name,'已注销'),
+	rows, err = s.query(s.db, `SELECT c.user_id, COALESCE(u.display_name,'已注销'),
 		COUNT(DISTINCT c.task_id), COALESCE(AVG(p.percent),0)
 		FROM claims c
 		JOIN users u ON u.id=c.user_id
 		LEFT JOIN progress p ON p.task_id=c.task_id AND p.user_id=c.user_id
 		JOIN tasks t ON t.id=c.task_id
 		WHERE t.deleted_at IS NULL
-		GROUP BY c.user_id ORDER BY COUNT(DISTINCT c.task_id) DESC`)
+		GROUP BY c.user_id, u.display_name ORDER BY COUNT(DISTINCT c.task_id) DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -883,7 +984,7 @@ func (s *Store) Stats() (*Stats, error) {
 // ---- 动态 ----
 
 func (s *Store) AddActivity(a Activity) error {
-	_, err := s.db.Exec(`INSERT INTO activities (id,action,target,target_id,task_title,user_id,created_at) VALUES (?,?,?,?,?,?,?)`,
+	_, err := s.exec(s.db, `INSERT INTO activities (id,action,target,target_id,task_title,user_id,created_at) VALUES (?,?,?,?,?,?,?)`,
 		a.ID, a.Action, a.Target, a.TargetID, a.TaskTitle, nullStr(a.UserID), a.CreatedAt)
 	return err
 }
@@ -893,7 +994,7 @@ func (s *Store) ListActivities(limit int) ([]Activity, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.db.Query(`SELECT a.id,a.action,a.target,a.target_id,a.task_title,
+	rows, err := s.query(s.db, `SELECT a.id,a.action,a.target,a.target_id,a.task_title,
         COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),a.created_at
         FROM activities a LEFT JOIN users u ON u.id=a.user_id
         ORDER BY a.created_at DESC LIMIT ?`, limit)
@@ -919,7 +1020,7 @@ func (s *Store) ListActivitiesByTask(taskID string, limit int) ([]Activity, erro
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.db.Query(`SELECT a.id,a.action,a.target,a.target_id,a.task_title,
+	rows, err := s.query(s.db, `SELECT a.id,a.action,a.target,a.target_id,a.task_title,
         COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),a.created_at
         FROM activities a LEFT JOIN users u ON u.id=a.user_id
         WHERE a.target_id = ?

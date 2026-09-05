@@ -14,6 +14,16 @@ import (
 //go:embed all:webdist
 var webFS embed.FS
 
+// openDB 按环境选择后端：
+//   - KANB_DATABASE_URL 非空 → PostgreSQL（Render/Supabase/Neon 等）
+//   - 否则 → SQLite 文件（-db 指定路径，默认 kanb.db）
+func openDB(sqlitePath string) (*Store, error) {
+	if url := os.Getenv("KANB_DATABASE_URL"); url != "" {
+		return OpenPostgres(url)
+	}
+	return OpenSQLite(sqlitePath)
+}
+
 func main() {
 	addr := flag.String("addr", ":8400", "listen address")
 	dbPath := flag.String("db", "kanb.db", "sqlite database file path")
@@ -22,7 +32,7 @@ func main() {
 	flag.Parse()
 	setupLog(*logLevel, *logJSON)
 
-	store, err := OpenStore(*dbPath)
+	store, err := openDB(*dbPath)
 	if err != nil {
 		log.Fatal().Err(err).Msg("open store")
 	}

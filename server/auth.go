@@ -51,7 +51,7 @@ func (s *Store) AnonymousID() (string, error) {
 		return anonIDStore.id, nil
 	}
 	var id string
-	err := s.db.QueryRow(`SELECT id FROM users WHERE username=?`, AnonUsername).Scan(&id)
+	err := s.queryRow(s.db, `SELECT id FROM users WHERE username=?`, AnonUsername).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -73,7 +73,7 @@ func (s *Store) Seed() {
 		{roleTableViewer, "访客：只读"},
 	}
 	for _, r := range roles {
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO roles (id,code,description) VALUES (?,?,?)`,
+		if _, err := s.exec(s.db, `INSERT INTO roles (id,code,description) VALUES (?,?,?) ON CONFLICT(code) DO NOTHING`,
 			newID(), r.code, r.desc); err != nil {
 			log.Warn().Err(err).Str("role", r.code).Msg("seed role")
 		}
@@ -97,7 +97,7 @@ func (s *Store) ensureUser(username, password, displayName, role string) error {
 	}
 	defer tx.Rollback()
 	var existing string
-	err = tx.QueryRow(`SELECT id FROM users WHERE username=?`, username).Scan(&existing)
+	err = s.queryRow(tx, `SELECT id FROM users WHERE username=?`, username).Scan(&existing)
 	switch {
 	case err == sql.ErrNoRows:
 		hash := ""
@@ -109,7 +109,7 @@ func (s *Store) ensureUser(username, password, displayName, role string) error {
 			hash = string(h)
 		}
 		uid := newID()
-		if _, err := tx.Exec(`INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
+		if _, err := s.exec(tx, `INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
 			uid, username, hash, displayName, now()); err != nil {
 			return err
 		}
@@ -129,10 +129,10 @@ func (s *Store) ensureUser(username, password, displayName, role string) error {
 
 func (s *Store) grantRoleTx(tx *sql.Tx, userID, roleCode string) error {
 	var roleID string
-	if err := tx.QueryRow(`SELECT id FROM roles WHERE code=?`, roleCode).Scan(&roleID); err != nil {
+	if err := s.queryRow(tx, `SELECT id FROM roles WHERE code=?`, roleCode).Scan(&roleID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`INSERT OR IGNORE INTO user_roles (user_id,role_id) VALUES (?,?)`, userID, roleID)
+	_, err := s.exec(tx, `INSERT INTO user_roles (user_id,role_id) VALUES (?,?) ON CONFLICT(user_id,role_id) DO NOTHING`, userID, roleID)
 	return err
 }
 
@@ -149,7 +149,7 @@ type userRow struct {
 
 // UserRoleCode 返回用户有效角色 code（多角色取权限最高者）。
 func (s *Store) UserRoleCode(userID string) (string, error) {
-	rows, err := s.db.Query(`SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=?`, userID)
+	rows, err := s.query(s.db, `SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=?`, userID)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +178,7 @@ func (s *Store) UserRoleCode(userID string) (string, error) {
 func (s *Store) getUserByUsername(username string) (*userRow, error) {
 	var u userRow
 	var disabled int
-	err := s.db.QueryRow(`SELECT id,username,password_hash,display_name,disabled,created_at FROM users WHERE username=?`, username).
+	err := s.queryRow(s.db, `SELECT id,username,password_hash,display_name,disabled,created_at FROM users WHERE username=?`, username).
 		Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &disabled, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -193,7 +193,7 @@ func (s *Store) getUserByUsername(username string) (*userRow, error) {
 func (s *Store) getUserByID(id string) (*userRow, error) {
 	var u userRow
 	var disabled int
-	err := s.db.QueryRow(`SELECT id,username,password_hash,display_name,disabled,created_at FROM users WHERE id=?`, id).
+	err := s.queryRow(s.db, `SELECT id,username,password_hash,display_name,disabled,created_at FROM users WHERE id=?`, id).
 		Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &disabled, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -224,7 +224,7 @@ func (s *Store) toUser(u *userRow) (*User, error) {
 // UserCount 用户总数（不含内置 anonymous）。
 func (s *Store) UserCount() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username<>?`, AnonUsername).Scan(&n)
+	err := s.queryRow(s.db, `SELECT COUNT(*) FROM users WHERE username<>?`, AnonUsername).Scan(&n)
 	return n, err
 }
 
@@ -260,7 +260,7 @@ func (s *Store) Register(username, password, displayName string) (*User, bool, e
 	}
 	defer tx.Rollback()
 	uid := newID()
-	if _, err := tx.Exec(`INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
+	if _, err := s.exec(tx, `INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
 		uid, username, hash, displayName, now()); err != nil {
 		return nil, false, err
 	}
@@ -302,7 +302,7 @@ func (s *Store) VerifyPassword(username, password string) (*User, bool, error) {
 // 调用 UserRoleCode（内部再开一条查询），在 MaxOpenConns=1 下外层 rows 独占
 // 唯一连接，内层查询会自死锁。本实现先收齐行、显式 Close，再统一补角色。
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query(`SELECT id,username,display_name,disabled,created_at FROM users WHERE username<>? ORDER BY created_at`, AnonUsername)
+	rows, err := s.query(s.db, `SELECT id,username,display_name,disabled,created_at FROM users WHERE username<>? ORDER BY created_at`, AnonUsername)
 	if err != nil {
 		return nil, err
 	}
@@ -346,10 +346,10 @@ func (s *Store) SetUserRole(userID, roleCode string) error {
 	}
 	defer tx.Rollback()
 	var exists string
-	if err := tx.QueryRow(`SELECT id FROM users WHERE id=?`, userID).Scan(&exists); err != nil {
+	if err := s.queryRow(tx, `SELECT id FROM users WHERE id=?`, userID).Scan(&exists); err != nil {
 		return ErrUserNotFound
 	}
-	if _, err := tx.Exec(`DELETE FROM user_roles WHERE user_id=?`, userID); err != nil {
+	if _, err := s.exec(tx, `DELETE FROM user_roles WHERE user_id=?`, userID); err != nil {
 		return err
 	}
 	if err := s.grantRoleTx(tx, userID, roleCode); err != nil {
@@ -360,7 +360,7 @@ func (s *Store) SetUserRole(userID, roleCode string) error {
 
 // SetUserDisabled 启停用用户。防止停用/删除自己见 handler 层保护。
 func (s *Store) SetUserDisabled(userID string, disabled bool) error {
-	_, err := s.db.Exec(`UPDATE users SET disabled=? WHERE id=?`, boolInt(disabled), userID)
+	_, err := s.exec(s.db, `UPDATE users SET disabled=? WHERE id=?`, boolInt(disabled), userID)
 	return err
 }
 
@@ -387,7 +387,7 @@ func (s *Store) UpdateSelf(userID, displayName, newPassword string) (*User, erro
 		}
 		hash = string(h)
 	}
-	if _, err := tx.Exec(`UPDATE users SET display_name=?, password_hash=? WHERE id=?`,
+	if _, err := s.exec(tx, `UPDATE users SET display_name=?, password_hash=? WHERE id=?`,
 		displayName, hash, userID); err != nil {
 		return nil, err
 	}
@@ -420,7 +420,7 @@ func (s *Store) CreateSession(userID string) (string, error) {
 	}
 	token := hex.EncodeToString(buf)
 	expires := time.Now().UTC().Add(sessionTTL).Format(time.RFC3339)
-	if _, err := s.db.Exec(`INSERT INTO sessions (token,user_id,expires_at,created_at) VALUES (?,?,?,?)`,
+	if _, err := s.exec(s.db, `INSERT INTO sessions (token,user_id,expires_at,created_at) VALUES (?,?,?,?)`,
 		token, userID, expires, now()); err != nil {
 		return "", err
 	}
@@ -445,7 +445,7 @@ func (s *Store) userByTokenInternal(token string) (*User, bool, error) {
 	var u userRow
 	var disabled int
 	var expiresAt string
-	err := s.db.QueryRow(`SELECT u.id,u.username,u.password_hash,u.display_name,u.disabled,u.created_at,s.expires_at
+	err := s.queryRow(s.db, `SELECT u.id,u.username,u.password_hash,u.display_name,u.disabled,u.created_at,s.expires_at
         FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?`, token).
 		Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &disabled, &u.CreatedAt, &expiresAt)
 	if err == sql.ErrNoRows {
@@ -457,11 +457,11 @@ func (s *Store) userByTokenInternal(token string) (*User, bool, error) {
 	u.Disabled = disabled != 0
 	exp, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
-		_, _ = s.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
+		_, _ = s.exec(s.db, `DELETE FROM sessions WHERE token=?`, token)
 		return nil, false, nil
 	}
 	if time.Now().UTC().After(exp) {
-		_, _ = s.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
+		_, _ = s.exec(s.db, `DELETE FROM sessions WHERE token=?`, token)
 		return nil, true, nil
 	}
 	if u.Disabled {
@@ -473,7 +473,7 @@ func (s *Store) userByTokenInternal(token string) (*User, bool, error) {
 
 // DeleteSession 登出：删除该 token。
 func (s *Store) DeleteSession(token string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
+	_, err := s.exec(s.db, `DELETE FROM sessions WHERE token=?`, token)
 	return err
 }
 
@@ -484,7 +484,7 @@ const SettingPublicMode = "public_mode"
 // PublicMode 返回当前公开度模式（非法值或缺失回退默认 private）。
 func (s *Store) PublicMode() (string, error) {
 	var v string
-	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, SettingPublicMode).Scan(&v)
+	err := s.queryRow(s.db, `SELECT value FROM settings WHERE key=?`, SettingPublicMode).Scan(&v)
 	if err == sql.ErrNoRows {
 		return defaultPublicMode, nil
 	}
@@ -500,7 +500,7 @@ func (s *Store) PublicMode() (string, error) {
 }
 
 func (s *Store) SetSetting(key, value string) error {
-	_, err := s.db.Exec(`INSERT INTO settings (key,value,updated_at) VALUES (?,?,?)
+	_, err := s.exec(s.db, `INSERT INTO settings (key,value,updated_at) VALUES (?,?,?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
 		key, value, now())
 	return err
@@ -509,7 +509,7 @@ func (s *Store) SetSetting(key, value string) error {
 // GetSetting 读单条设置；不存在返回 ("", nil)。
 func (s *Store) GetSetting(key string) (string, error) {
 	var v string
-	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	err := s.queryRow(s.db, `SELECT value FROM settings WHERE key=?`, key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

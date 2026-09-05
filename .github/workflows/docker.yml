@@ -1,0 +1,50 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: 构建镜像并推送 GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签（sha 与版本）
+        id: meta
+        run: |
+          echo "sha=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          # 语义化 tag（v1.2.3）时额外打 latest；main 分支也打 latest
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_tag=main" >> "$GITHUB_OUTPUT"
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.sha }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version_tag }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

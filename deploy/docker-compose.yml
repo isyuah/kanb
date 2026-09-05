@@ -1,5 +1,8 @@
 services:
   kanb:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: kanb:local
     container_name: kanb
     restart: unless-stopped

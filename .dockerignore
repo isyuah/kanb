@@ -1,0 +1,15 @@
+# 构建上下文精简（context = 仓库根）
+.git
+.github
+web/node_modules
+web/dist
+server/*.db
+server/*.exe
+server/server-new.exe
+server/kanb-server-linux
+server/webdist
+mcp/kanb-mcp.exe
+mcp/*.exe
+*.tar
+data
+deploy/data

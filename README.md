@@ -1,78 +1,104 @@
 # Kanb — 团队任务看板
 
 ![CI](https://github.com/isyuah/kanb/actions/workflows/ci.yml/badge.svg)
+![Go](https://img.shields.io/badge/Go-1.27-blue)
+![React](https://img.shields.io/badge/React-19-61dafb)
 
-小团队内部使用的任务看板（BS 架构）。Go 后端 + SQLite 存储 + SSE 实时同步，React + Ant Design 前端。多人可认领同一任务，各自维护进度记录。
+Kanb 是一个面向小团队的轻量任务看板：**Go 单二进制后端 + React 前端**，开箱即用、数据落在一个 SQLite 文件里，还带 SSE 实时同步与 MCP 接口，AI 也能直接上手帮你干活。
 
-## 功能
+## 功能一览
 
-- 三列看板（待认领 / 进行中 / 已完成），跨列拖拽改状态（拖拽手柄）
-- 任务详情（宽幅 Modal 三栏）：内容 Markdown 编辑预览、进度记录、认领人、依赖、操作时间线、**任务评论（支持回复/编辑/删除）**
-- 多人认领同一任务，每人独立的进度百分比 + 说明
-- 依赖关系：防成环校验，未完成依赖阻塞提示；依赖总览图（React Flow）
-- 用户体系与 RBAC：注册 / 登录，三角色（管理员 / 成员 / 访客），首个注册用户自动为管理员
-- 公开度模式（系统设置）：不公开（需登录）/ 公开只读 / 完全公开（免登录可写，回到极简体验）
-- 搜索过滤、逾期高亮、归档 / 恢复、回收站（软删可恢复）、日历视图、个人中心、统计总览
-- 团队动态、SSE 多端实时同步；操作自动留痕（谁 + 何时）
-- 数据库满足 3NF：用户实体化、任务-标签关联表、外键真实启用、审计快照设计，见 `docs/db-design.md`
-- **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖、发表/回复/编辑/删除评论，见 `docs/mcp.md`
-- 接口文档见 `docs/api.md` 与 `docs/api-contract.md`
-- GitHub Actions CI：Go vet+test、前端 lint+typecheck+build（见 `.github/workflows/ci.yml`）
+- **看板**：待认领 / 进行中 / 已完成三列，拖拽改状态；搜索、筛选、逾期高亮
+- **任务详情**：内容（Markdown 编辑预览）、认领人、依赖关系（防成环）、进度记录、操作时间线、**讨论评论**（支持回复/编辑/删除）
+- **协作**：多人认领同一任务、各自独立进度；团队动态流、SSE 多端实时同步
+- **权限**：注册/登录 + RBAC 三角色（管理员/成员/访客）；站点可设为私有 / 公开只读 / 完全公开
+- **管理**：回收站（软删可恢复）、归档、日历视图、统计总览、个人中心
+- **AI 接入**：内置 MCP server，Claude / Codex / Cursor 等客户端可直接安排任务、报进度、发评论
 
-## 快速开始（开发）
+## 快速开始
+
+### 开发模式（前后端分离）
 
 ```bash
-# 后端（Go 1.27+，纯 Go SQLite 无需 CGO）
+# 后端（Go 1.27+；纯 Go SQLite，无需 CGO）
 cd server
 go run . -addr :8400 -db kanb.db
 
 # 前端（Node 20+）
 cd web
 npm install
-npm run dev        # http://localhost:5173 （代理 /api 到 8400）
+npm run dev        # http://localhost:5173（代理 /api 到 8400）
 ```
 
-首次启动后打开页面注册第一个账号，即为管理员。
+打开页面注册第一个账号即为管理员。
 
-## 生产部署
+### 单二进制部署
 
 ```bash
-cd web && npm run build        # 产物输出到 server/webdist
+cd web && npm run build          # 产物输出到 server/webdist
 cd ../server && go build -o kanb-server.exe .
 ./kanb-server.exe -addr :8400 -db kanb.db
-# 打开 http://localhost:8400 —— 单二进制同时托管前端与 API
+# 打开 http://localhost:8400 —— 一个进程同时托管前端与 API
 ```
 
-数据保存在 `kanb.db`（SQLite），备份该文件即可。
+数据全部在 `kanb.db`（SQLite 单文件），备份它即完成备份。
+
+### Docker
+
+两条路：
+
+**① 本地构建（多阶段：前端 → Go 交叉编译 → 精简镜像，无需本地装 Go/Node）**
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+# 打开 http://localhost:8400；数据持久化在 deploy/data/kanb.db
+```
+
+**② 直接跑 CI 构建好的镜像（GitHub Actions 推送至 GHCR，build once / deploy many）**
+
+```bash
+docker pull ghcr.io/isyuah/kanb:latest
+docker run -d -p 127.0.0.1:8400:8400 -v ./data:/data ghcr.io/isyuah/kanb:latest
+```
+
+每次 push main 自动构建 `ghcr.io/isyuah/kanb:<sha>` 与 `:latest`；打 `v*` tag 另推版本镜像（见 `.github/workflows/docker.yml`）。
+
+## 让 AI 干活（MCP）
+
+MCP server（`mcp/`）把看板操作暴露给 AI 客户端：列/建任务、认领、报进度、设依赖、看/发/回/删评论。
+
+```bash
+cd mcp && go build -o kanb-mcp.exe .
+```
+
+以真实账号身份运行（推荐——操作归属真人、任意公开度可写）：
+
+```json
+// Claude Desktop: claude_desktop_config.json
+{
+  "mcpServers": {
+    "kanb": {
+      "command": "E:\\Proj\\kanb\\mcp\\kanb-mcp.exe",
+      "env": { "KANB_USERNAME": "ai-bot", "KANB_PASSWORD": "******" }
+    }
+  }
+}
+```
+
+- 不配凭据则匿名运行（仅看板 open 模式可写，操作显示为「匿名」）
+- 也可用 `KANB_TOKEN` 环境变量或 `-token` 参数注入已有会话
+- token 过期会自动用账号密码重新登录并重放请求，无需人工干预
+- 完整说明见 [`docs/mcp.md`](docs/mcp.md)
 
 ## 技术栈
 
-- 后端：Go 标准库 net/http、modernc.org/sqlite（纯 Go）、SSE
-- 前端：Vite + React 19 + TypeScript、Ant Design 6、zustand、@dnd-kit（拖拽）、@xyflow/react（依赖图）、dayjs + AntD Calendar（日历视图）、motion（动画）
-- 存储：SQLite 单文件；localStorage 缓存登录态与离线展示
+后端 Go（net/http + modernc.org/sqlite + SSE）· 前端 React 19 / TypeScript / Ant Design 6 / Vite · 存储 SQLite 单文件 · CI GitHub Actions
 
-## 接口速览
+## 文档
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | /api/auth/register · /login · /logout | 注册 / 登录 / 登出 |
-| GET | /api/users · POST · PATCH /{id} | 用户管理（admin） |
-| GET | /api/settings · PATCH | 系统设置 / 公开度（PATCH 为 admin） |
-| GET | /api/tasks | 任务列表（含认领/进度/依赖/标签） |
-| POST | /api/tasks | 创建任务 |
-| PATCH | /api/tasks/{id} | 更新任务（标题/内容/状态/截止/标签/归档） |
-| DELETE | /api/tasks/{id} | 软删任务（进回收站） |
-| GET | /api/trash · POST /restore · DELETE | 回收站：列表 / 恢复 / 彻底删除 |
-| POST/DELETE | /api/tasks/{id}/claim | 认领 / 取消认领 |
-| POST | /api/tasks/{id}/progress | 添加进度记录 |
-| PUT/DELETE | /api/progress/{pid} | 修改/删除自己的进度记录 |
-| POST/DELETE | /api/tasks/{id}/deps[/{depId}] | 添加/移除依赖（防成环） |
-| GET | /api/tasks/{id}/comments | 任务评论列表（含回复） |
-| POST | /api/tasks/{id}/comments | 发表评论 / 回复（body: content, parentId?） |
-| PATCH/DELETE | /api/comments/{cid} | 编辑 / 删除评论（作者或 admin） |
-| GET | /api/activities | 操作动态（全局） |
-| GET | /api/tasks/{id}/activities | 某任务完整操作时间线 |
-| GET | /api/stats | 看板统计总览（状态/标签/成员工作量/逾期） |
-| GET | /api/events | SSE 变更推送 |
-
-鉴权：登录后请求携带 `Authorization: Bearer <token>`（详见 `docs/api-contract.md`）。
+| 文档 | 内容 |
+|---|---|
+| [`docs/db-design.md`](docs/db-design.md) | 数据库设计：12 表 schema、3NF 论证、约束与索引 |
+| [`docs/design-notes.md`](docs/design-notes.md) | 架构 / RBAC 权限矩阵 / 公开度 / 设计取舍与踩坑记录 |
+| [`docs/api.md`](docs/api.md) · [`docs/api-contract.md`](docs/api-contract.md) | REST 接口说明与请求/响应契约 |
+| [`docs/mcp.md`](docs/mcp.md) | MCP server 工具清单与客户端配置 |

@@ -42,6 +42,7 @@ jobs:
           context: .
           file: deploy/Dockerfile
           push: true
+          driver: docker-container
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.sha }}
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version_tag }}

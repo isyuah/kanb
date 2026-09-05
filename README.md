@@ -1,25 +1,28 @@
 # Kanb — 团队任务看板
 
+![CI](https://github.com/isyuah/kanb/actions/workflows/ci.yml/badge.svg)
+
 小团队内部使用的任务看板（BS 架构）。Go 后端 + SQLite 存储 + SSE 实时同步，React + Ant Design 前端。多人可认领同一任务，各自维护进度记录。
 
 ## 功能
 
 - 三列看板（待认领 / 进行中 / 已完成），跨列拖拽改状态（拖拽手柄）
-- 任务详情抽屉：内容、截止日期、标签、认领人、依赖、进度记录（1:N 可增改删）、操作时间线
+- 任务详情（宽幅 Modal 三栏）：内容 Markdown 编辑预览、进度记录、认领人、依赖、操作时间线、**任务评论（支持回复/编辑/删除）**
 - 多人认领同一任务，每人独立的进度百分比 + 说明
 - 依赖关系：防成环校验，未完成依赖阻塞提示；依赖总览图（React Flow）
 - 用户体系与 RBAC：注册 / 登录，三角色（管理员 / 成员 / 访客），首个注册用户自动为管理员
 - 公开度模式（系统设置）：不公开（需登录）/ 公开只读 / 完全公开（免登录可写，回到极简体验）
-- 搜索过滤、逾期高亮、归档 / 恢复、回收站（软删可恢复）、日历视图、个人中心
+- 搜索过滤、逾期高亮、归档 / 恢复、回收站（软删可恢复）、日历视图、个人中心、统计总览
 - 团队动态、SSE 多端实时同步；操作自动留痕（谁 + 何时）
 - 数据库满足 3NF：用户实体化、任务-标签关联表、外键真实启用、审计快照设计，见 `docs/db-design.md`
 - **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖，见 `docs/mcp.md`
 - 接口文档见 `docs/api.md` 与 `docs/api-contract.md`
+- GitHub Actions CI：Go vet+test、前端 lint+typecheck+build（见 `.github/workflows/ci.yml`）
 
 ## 快速开始（开发）
 
 ```bash
-# 后端（Go 1.22+，纯 Go SQLite 无需 CGO）
+# 后端（Go 1.27+，纯 Go SQLite 无需 CGO）
 cd server
 go run . -addr :8400 -db kanb.db
 
@@ -64,7 +67,11 @@ cd ../server && go build -o kanb-server.exe .
 | POST | /api/tasks/{id}/progress | 添加进度记录 |
 | PUT/DELETE | /api/progress/{pid} | 修改/删除自己的进度记录 |
 | POST/DELETE | /api/tasks/{id}/deps[/{depId}] | 添加/移除依赖（防成环） |
-| GET | /api/activities | 操作动态 |
+| GET | /api/tasks/{id}/comments | 任务评论列表（含回复） |
+| POST | /api/tasks/{id}/comments | 发表评论 / 回复（body: content, parentId?） |
+| PATCH/DELETE | /api/comments/{cid} | 编辑 / 删除评论（作者或 admin） |
+| GET | /api/activities | 操作动态（全局） |
+| GET | /api/tasks/{id}/activities | 某任务完整操作时间线 |
 | GET | /api/stats | 看板统计总览（状态/标签/成员工作量/逾期） |
 | GET | /api/events | SSE 变更推送 |
 

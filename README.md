@@ -15,7 +15,7 @@
 - 搜索过滤、逾期高亮、归档 / 恢复、回收站（软删可恢复）、日历视图、个人中心、统计总览
 - 团队动态、SSE 多端实时同步；操作自动留痕（谁 + 何时）
 - 数据库满足 3NF：用户实体化、任务-标签关联表、外键真实启用、审计快照设计，见 `docs/db-design.md`
-- **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖，见 `docs/mcp.md`
+- **MCP 支持**：AI 客户端可直接安排任务、认领、报进度、设依赖、发表/回复/编辑/删除评论，见 `docs/mcp.md`
 - 接口文档见 `docs/api.md` 与 `docs/api-contract.md`
 - GitHub Actions CI：Go vet+test、前端 lint+typecheck+build（见 `.github/workflows/ci.yml`）
 

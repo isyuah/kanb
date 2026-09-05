@@ -359,6 +359,89 @@ func registerTools(s *server.MCPServer) {
 			return toolResult(err, data), nil
 		},
 	)
+
+	// ---- 评论 ----
+
+	s.AddTool(
+		mcp.NewTool("list_comments",
+			mcp.WithDescription("查看某任务的评论（含回复，按时间正序）。"),
+			mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			id, _ := argsOf(req, "task_id").(string)
+			if id == "" {
+				return mcp.NewToolResultError("task_id 必填"), nil
+			}
+			code, data, err := kanbReq(ctx, "GET", "/tasks/"+url.PathEscape(id)+"/comments", "", nil)
+			if err != nil {
+				return toolResult(err, nil), nil
+			}
+			if code != 200 {
+				return toolResult(fmt.Errorf("HTTP %d: %s", code, data), nil), nil
+			}
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	authorTool("add_comment", "为任务发表评论（或回复某条评论）。",
+		map[string]mcp.ToolOption{
+			"task_id":   mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
+			"content":   mcp.WithString("content", mcp.Required(), mcp.Description("评论内容（1-2000 字符，支持 Markdown）")),
+			"parent_id": mcp.WithString("parent_id", mcp.Description("回复的评论 ID；不填为顶层评论")),
+		},
+		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+			id, _ := args["task_id"].(string)
+			content, _ := args["content"].(string)
+			parent, _ := args["parent_id"].(string)
+			content = strings.TrimSpace(content)
+			if id == "" || content == "" {
+				return mcp.NewToolResultError("task_id 与 content 均必填"), nil
+			}
+			if len(content) > 2000 {
+				return mcp.NewToolResultError("content 需在 1-2000 字符内"), nil
+			}
+			body := map[string]any{"content": content, "parentId": nilIfEmpty(parent)}
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/comments", author, body)
+			_ = code
+			return toolResult(err, data), nil
+		},
+	)
+
+	authorTool("edit_comment", "编辑自己的评论内容。",
+		map[string]mcp.ToolOption{
+			"comment_id": mcp.WithString("comment_id", mcp.Required(), mcp.Description("评论 ID")),
+			"content":    mcp.WithString("content", mcp.Required(), mcp.Description("新的评论内容（1-2000 字符）")),
+		},
+		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+			cid, _ := args["comment_id"].(string)
+			content, _ := args["content"].(string)
+			content = strings.TrimSpace(content)
+			if cid == "" || content == "" {
+				return mcp.NewToolResultError("comment_id 与 content 均必填"), nil
+			}
+			if len(content) > 2000 {
+				return mcp.NewToolResultError("content 需在 1-2000 字符内"), nil
+			}
+			code, data, err := kanbReq(context.Background(), "PATCH", "/comments/"+url.PathEscape(cid), author, map[string]any{"content": content})
+			_ = code
+			return toolResult(err, data), nil
+		},
+	)
+
+	authorTool("delete_comment", "删除自己的评论（作者本人或管理员）。删除顶层评论会连带删除其全部回复。",
+		map[string]mcp.ToolOption{
+			"comment_id": mcp.WithString("comment_id", mcp.Required(), mcp.Description("评论 ID")),
+		},
+		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+			cid, _ := args["comment_id"].(string)
+			if cid == "" {
+				return mcp.NewToolResultError("comment_id 必填"), nil
+			}
+			code, data, err := kanbReq(context.Background(), "DELETE", "/comments/"+url.PathEscape(cid), author, nil)
+			_ = code
+			return toolResult(err, data), nil
+		},
+	)
 }
 
 func argsOf(req mcp.CallToolRequest, key string) any {

@@ -29,6 +29,10 @@ MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Cl
 | `add_progress` | 添加进度记录 | `author*` `task_id*` `percent*`(0-100) `text?` |
 | `add_dependency` | 加前置依赖（防成环） | `author*` `task_id*` `dep_id*` |
 | `remove_dependency` | 移除依赖 | `author*` `task_id*` `dep_id*` |
+| `list_comments` | 查看某任务评论（含回复） | `task_id*` |
+| `add_comment` | 发表评论/回复 | `author*` `task_id*` `content*` `parent_id?` |
+| `edit_comment` | 编辑自己的评论 | `author*` `comment_id*` `content*` |
+| `delete_comment` | 删除评论（删顶层连带回复） | `author*` `comment_id*` |
 
 `*` = 必填。`author` 是操作者名字——**它会作为该操作人显示在看板动态里**，AI 替谁干活就填谁（或填一个统一的 `AI助手` 名字，团队成员可辨识）。
 

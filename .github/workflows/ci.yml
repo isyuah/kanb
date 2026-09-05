@@ -6,23 +6,6 @@ on:
   pull_request:
 
 jobs:
-  backend:
-    name: Go 后端 (vet + test)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache-dependency-path: server/go.sum
-      - name: go vet
-        run: go vet ./...
-      - name: go test
-        run: go test ./...
-
   frontend:
     name: 前端 (lint + typecheck + build)
     runs-on: ubuntu-latest
@@ -42,3 +25,32 @@ jobs:
         run: npm run lint
       - name: typecheck + build
         run: npm run build
+      - name: 上传前端产物（供后端 embed 编译）
+        uses: actions/upload-artifact@v4
+        with:
+          name: webdist
+          path: server/webdist
+          if-no-files-found: error
+
+  backend:
+    name: Go 后端 (vet + test, 含前端产物)
+    needs: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: server/go.sum
+      - name: 下载前端产物到 server/webdist
+        uses: actions/download-artifact@v4
+        with:
+          name: webdist
+          path: server/webdist
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...

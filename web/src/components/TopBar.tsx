@@ -92,14 +92,18 @@ export default function TopBar() {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
+        flexWrap: 'wrap',
+        gap: '12px 8px',
         borderBottom: '1px solid rgba(31,36,48,0.08)',
         paddingInline: 20,
+        paddingBlock: 8,
         background: 'rgba(255,255,255,0.86)',
         backdropFilter: 'blur(10px)',
         position: 'sticky',
         top: 0,
         zIndex: 100,
+        minHeight: 56,
+        height: 'auto',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
@@ -129,7 +133,7 @@ export default function TopBar() {
             allowClear
             prefix={<SearchOutlined style={{ color: 'rgba(31,36,48,0.4)' }} />}
             placeholder="搜索任务、标签、认领人"
-            style={{ width: 200, marginLeft: 8 }}
+            style={{ width: 'min(200px, 28vw)', marginLeft: 8, minWidth: 120 }}
           />
 
           <Segmented

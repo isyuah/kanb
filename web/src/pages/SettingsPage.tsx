@@ -61,12 +61,23 @@ export default function SettingsPage() {
             {(Object.keys(PUBLIC_MODE_DESC) as PublicMode[]).map((m) => (
               <div
                 key={m}
+                role="radio"
+                aria-checked={mode === m}
+                tabIndex={0}
+                onClick={() => setMode(m)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setMode(m)
+                  }
+                }}
                 style={{
                   border: '1px solid rgba(31,36,48,0.1)',
                   borderRadius: 12,
                   padding: '12px 16px',
                   cursor: 'pointer',
                   background: mode === m ? 'rgba(79,110,247,0.05)' : '#fff',
+                  transition: 'border-color 0.2s, background 0.2s',
                 }}
               >
                 <Radio value={m} style={{ fontWeight: 600 }}>

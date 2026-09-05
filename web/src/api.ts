@@ -178,6 +178,10 @@ export const api = {
 
   activities: (limit = 50) => request<Activity[]>(`/activities?limit=${limit}`),
 
+  /** 某任务完整操作时间线（后端按 target_id 过滤，非全局截断） */
+  taskActivities: (taskId: string, limit = 200) =>
+    request<Activity[]>(`/tasks/${taskId}/activities?limit=${limit}`),
+
   /* ---------------- 统计 ---------------- */
   stats: () => request<Stats>('/stats'),
 

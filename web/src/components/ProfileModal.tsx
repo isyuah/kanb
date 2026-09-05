@@ -4,11 +4,11 @@ import {
   Avatar,
   Button,
   Descriptions,
-  Drawer,
   Empty,
   Form,
   Input,
   List,
+  Modal,
   Space,
   Tag,
   Timeline,
@@ -23,8 +23,8 @@ import { avatarStyle, fmtTime } from '../lib'
 
 const { Text } = Typography
 
-/** 个人中心：我的信息 / 我的认领 / 我的动态 */
-export default function ProfileDrawer() {
+/** 个人中心：我的信息 / 我的认领 / 我的动态（宽 Modal 双列） */
+export default function ProfileModal() {
   const open = useUI((s) => s.profileOpen)
   const setOpen = useUI((s) => s.setProfileOpen)
   const user = useKanban((s) => s.user)
@@ -48,79 +48,103 @@ export default function ProfileDrawer() {
 
   if (!user) return null
   return (
-    <Drawer open={open} onClose={() => setOpen(false)} title="个人中心" width={520} destroyOnHidden>
-      <ProfileSection
-        user={user}
-        setUser={(next) => {
-          // 展示名更新后同步 store 与本地缓存（applyUser 已处理持久化）
-          useKanban.getState().applyUser(next)
-        }}
-      />
-      <div style={{ margin: '20px 0 10px' }}>
-        <Text strong style={{ fontSize: 15 }}>
-          我的认领（{mine.length}）
-        </Text>
-      </div>
-      {mine.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有认领任务" />
-      ) : (
-        <List
-          size="small"
-          dataSource={mine}
-          renderItem={(t) => (
-            <List.Item
-              style={{ cursor: 'pointer' }}
-              onClick={() => {
-                setOpen(false)
-                useUI.getState().openTask(t.id)
-              }}
-            >
-              <List.Item.Meta
-                title={<Text strong style={{ fontSize: 13 }}>{t.title}</Text>}
-                description={
-                  <Space size={6}>
-                    <Tag style={{ marginInlineEnd: 0 }}>{t.status === 'todo' ? '待认领' : t.status === 'in_progress' ? '进行中' : '已完成'}</Tag>
-                    {t.dueDate && <Text type="secondary" style={{ fontSize: 12 }}>截止 {t.dueDate}</Text>}
-                  </Space>
-                }
-              />
-            </List.Item>
-          )}
-        />
-      )}
+    <Modal
+      open={open}
+      onCancel={() => setOpen(false)}
+      footer={null}
+      title="个人中心"
+      width={960}
+      destroyOnHidden
+      style={{ top: 40 }}
+      styles={{ body: { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto', paddingTop: 8 } }}
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 5fr) minmax(0, 4fr)', gap: 32 }}>
+        {/* 左列：我的信息 + 我的动态 */}
+        <div style={{ minWidth: 0 }}>
+          <ProfileSection
+            user={user}
+            setUser={(next) => {
+              // 展示名更新后同步 store 与本地缓存（applyUser 已处理持久化）
+              useKanban.getState().applyUser(next)
+            }}
+          />
 
-      <div style={{ margin: '20px 0 10px' }}>
-        <Text strong style={{ fontSize: 15 }}>
-          我的动态
-        </Text>
-      </div>
-      {myActs.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无动态" />
-      ) : (
-        <Timeline
-          items={myActs.slice(0, 40).map((a) => ({
-            color: '#4f6ef7',
-            children: (
-              <div key={a.id}>
-                <Text strong style={{ fontSize: 13 }}>
-                  {ACTION_LABELS[a.action] ?? a.action}
-                </Text>
-                {a.taskTitle && (
-                  <Text type="secondary" style={{ fontSize: 13, marginLeft: 6 }}>
-                    {a.taskTitle}
-                  </Text>
+          <div style={{ margin: '24px 0 10px' }}>
+            <Text strong style={{ fontSize: 15 }}>
+              我的动态
+            </Text>
+          </div>
+          {myActs.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无动态" />
+          ) : (
+            <Timeline
+              items={myActs.slice(0, 40).map((a) => ({
+                color: '#4f6ef7',
+                children: (
+                  <div key={a.id}>
+                    <Text strong style={{ fontSize: 13 }}>
+                      {ACTION_LABELS[a.action] ?? a.action}
+                    </Text>
+                    {a.taskTitle && (
+                      <Text type="secondary" style={{ fontSize: 13, marginLeft: 6 }}>
+                        {a.taskTitle}
+                      </Text>
+                    )}
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {fmtTime(a.createdAt)}
+                      </Text>
+                    </div>
+                  </div>
+                ),
+              }))}
+            />
+          )}
+        </div>
+
+        {/* 右列：我的认领 */}
+        <div style={{ minWidth: 0 }}>
+          <Text strong style={{ fontSize: 15 }}>
+            我的认领（{mine.length}）
+          </Text>
+          <div style={{ marginTop: 10 }}>
+            {mine.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有认领任务" />
+            ) : (
+              <List
+                size="small"
+                dataSource={mine}
+                renderItem={(t) => (
+                  <List.Item
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      setOpen(false)
+                      useUI.getState().openTask(t.id)
+                    }}
+                  >
+                    <List.Item.Meta
+                      title={<Text strong style={{ fontSize: 13 }}>{t.title}</Text>}
+                      description={
+                        <Space size={6}>
+                          <Tag style={{ marginInlineEnd: 0 }}>
+                            {t.status === 'todo' ? '待认领' : t.status === 'in_progress' ? '进行中' : '已完成'}
+                          </Tag>
+                          {t.dueDate && (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              截止 {t.dueDate}
+                            </Text>
+                          )}
+                        </Space>
+                      }
+                    />
+                  </List.Item>
                 )}
-                <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {fmtTime(a.createdAt)}
-                  </Text>
-                </div>
-              </div>
-            ),
-          }))}
-        />
-      )}
-    </Drawer>
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -213,7 +237,17 @@ function ProfileSection({
         column={1}
         style={{ marginTop: 12 }}
         items={[
-          { key: 'role', label: '角色', children: <Tag color={user.role === 'admin' ? 'gold' : user.role === 'member' ? 'blue' : 'default'}>{ROLE_LABELS[user.role]}</Tag> },
+          {
+            key: 'role',
+            label: '角色',
+            children: (
+              <Tag
+                color={user.role === 'admin' ? 'gold' : user.role === 'member' ? 'blue' : 'default'}
+              >
+                {ROLE_LABELS[user.role]}
+              </Tag>
+            ),
+          },
           { key: 'created', label: '加入时间', children: fmtTime(user.createdAt) },
         ]}
       />

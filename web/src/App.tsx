@@ -7,11 +7,11 @@ import type { View } from './ui'
 import TopBar from './components/TopBar'
 import KanbanBoard from './components/KanbanBoard'
 import DepGraph from './components/DepGraph'
-import TaskDrawer from './components/TaskDrawer'
+import TaskModal from './components/task/TaskModal'
 import NewTaskModal from './components/NewTaskModal'
 import ArchiveModal from './components/ArchiveModal'
 import FeedDrawer from './components/FeedDrawer'
-import ProfileDrawer from './components/ProfileDrawer'
+import ProfileModal from './components/ProfileModal'
 import LoginModal from './components/LoginModal'
 import { LoginGate } from './pages/LoginPage'
 import CalendarPage from './pages/CalendarPage'
@@ -27,6 +27,7 @@ export default function App() {
   const tasks = useKanban((s) => s.tasks)
   const error = useKanban((s) => s.error)
   const refresh = useKanban((s) => s.refresh)
+  const refreshActivities = useKanban((s) => s.refreshActivities)
   const user = useKanban((s) => s.user)
   const publicMode = useKanban((s) => s.publicMode)
   const view = useUI((s) => s.view)
@@ -36,8 +37,11 @@ export default function App() {
   const locked = !user && publicMode === 'private'
 
   useEffect(() => {
-    if (!locked) void refresh()
-  }, [refresh, locked])
+    if (!locked) {
+      void refresh()
+      void refreshActivities()
+    }
+  }, [refresh, refreshActivities, locked])
 
   const viewContent = (v: View) => {
     switch (v) {
@@ -128,11 +132,11 @@ export default function App() {
         </Layout>
       )}
 
-      <TaskDrawer />
+      <TaskModal />
       <NewTaskModal />
       <ArchiveModal />
       <FeedDrawer />
-      <ProfileDrawer />
+      <ProfileModal />
       <LoginModal />
     </AntApp>
   )

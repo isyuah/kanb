@@ -25,11 +25,14 @@ RUN go build -trimpath -o /out/kanb-server .
 
 # ---- 阶段 3: 运行镜像 ----
 FROM alpine:3.20
-RUN addgroup -g 10001 kanb && adduser -u 10001 -G kanb -D -h /app kanb
+RUN addgroup -g 10001 kanb && adduser -u 10001 -G kanb -D -h /app kanb \
+    && mkdir -p /data && chown kanb:kanb /data
 WORKDIR /app
 COPY --from=gobuild /out/kanb-server /app/kanb-server
+RUN chown kanb:kanb /app
 USER kanb
 EXPOSE 8400
 VOLUME /data
 ENTRYPOINT ["/app/kanb-server"]
-CMD ["-addr", ":8400", "-db", "/data/kanb.db"]
+# 默认 db 落在当前工作目录（/app，kanb 用户可写）；挂载 volume 时用 -db /data/kanb.db
+CMD ["-addr", ":8400", "-db", "kanb.db"]

@@ -297,6 +297,10 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/progress/{pid}", a.gateWrite(a.handleDeleteProgress))
 	mux.HandleFunc("POST /api/tasks/{id}/deps", a.gateWrite(a.handleAddDep))
 	mux.HandleFunc("DELETE /api/tasks/{id}/deps/{depId}", a.gateWrite(a.handleRemoveDep))
+	mux.HandleFunc("GET /api/tasks/{id}/comments", a.gateRead(a.handleListComments))
+	mux.HandleFunc("POST /api/tasks/{id}/comments", a.gateWrite(a.handleAddComment))
+	mux.HandleFunc("PATCH /api/comments/{cid}", a.gateWrite(a.handleUpdateComment))
+	mux.HandleFunc("DELETE /api/comments/{cid}", a.gateWrite(a.handleDeleteComment))
 
 	// ===== 回收站（软删）=====
 	mux.HandleFunc("GET /api/trash", a.gateRead(a.handleListTrash))
@@ -751,6 +755,128 @@ func (a *app) handleDeleteProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.recordActivity(r, "progress_deleted", "task", p.TaskID)
+	a.writeNoContent(w)
+}
+
+// ---- 评论 ----
+
+// listComments 读某任务评论（读操作，gateRead 已在路由层鉴权）。
+func (a *app) handleListComments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	comments, err := a.store.ListComments(id)
+	if err != nil {
+		a.writeErr(w, 500, "读取评论失败: "+err.Error())
+		return
+	}
+	a.writeJSON(w, 200, comments)
+}
+
+func (a *app) handleAddComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	uid := a.currentUserID(r)
+	var in struct {
+		Content  string `json:"content"`
+		ParentID string `json:"parentId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		a.writeErr(w, 400, "请求体解析失败")
+		return
+	}
+	in.Content = strings.TrimSpace(in.Content)
+	if in.Content == "" || len(in.Content) > 2000 {
+		a.writeErr(w, 400, "评论内容需为 1-2000 字符")
+		return
+	}
+	// 任务必须存在（防孤儿；软删/归档任务仍可评论——以任务本体存在为准）
+	task, err := a.store.GetTask(id)
+	if err != nil || task == nil {
+		a.writeErr(w, 404, "任务不存在")
+		return
+	}
+	// 父评论校验：必须在同一任务
+	if in.ParentID != "" {
+		parent, err := a.store.GetComment(in.ParentID)
+		if err != nil || parent == nil {
+			a.writeErr(w, 404, "回复的评论不存在")
+			return
+		}
+		if parent.TaskID != id {
+			a.writeErr(w, 400, "回复的评论不属于该任务")
+			return
+		}
+		// 回复的回复归一到顶层评论下（单层回复约束）
+		if parent.ParentID != "" {
+			in.ParentID = parent.ParentID
+		}
+	}
+	ts := now()
+	c := Comment{ID: newID(), TaskID: id, UserID: uid, ParentID: in.ParentID,
+		Content: in.Content, CreatedAt: ts, UpdatedAt: ts}
+	if err := a.store.AddComment(c); err != nil {
+		a.writeErr(w, 500, "发表评论失败: "+err.Error())
+		return
+	}
+	created, _ := a.store.GetComment(c.ID)
+	if created == nil {
+		created = &c
+	}
+	a.hub.publish(id) // SSE：其他端刷新该任务
+	a.writeJSON(w, 201, created)
+}
+
+func (a *app) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
+	cid := r.PathValue("cid")
+	c, err := a.store.GetComment(cid)
+	if err != nil || c == nil {
+		a.writeErr(w, 404, "评论不存在")
+		return
+	}
+	uid := a.currentUserID(r)
+	if uid == "" || c.UserID != uid {
+		a.writeErr(w, 403, "只能编辑自己的评论")
+		return
+	}
+	var in struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		a.writeErr(w, 400, "请求体解析失败")
+		return
+	}
+	in.Content = strings.TrimSpace(in.Content)
+	if in.Content == "" || len(in.Content) > 2000 {
+		a.writeErr(w, 400, "评论内容需为 1-2000 字符")
+		return
+	}
+	if err := a.store.UpdateComment(cid, in.Content, now()); err != nil {
+		a.writeErr(w, 500, "更新评论失败: "+err.Error())
+		return
+	}
+	c.Content = in.Content
+	c.UpdatedAt = now()
+	a.hub.publish(c.TaskID)
+	a.writeJSON(w, 200, c)
+}
+
+func (a *app) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	cid := r.PathValue("cid")
+	c, err := a.store.GetComment(cid)
+	if err != nil || c == nil {
+		a.writeErr(w, 404, "评论不存在")
+		return
+	}
+	uid := a.currentUserID(r)
+	// 作者本人或管理员可删（含级联删除其回复）
+	u := currentUser(r)
+	if uid == "" || c.UserID != uid && !(u != nil && u.Role == RoleAdmin) {
+		a.writeErr(w, 403, "只能删除自己的评论")
+		return
+	}
+	if err := a.store.DeleteComment(cid); err != nil {
+		a.writeErr(w, 500, "删除评论失败: "+err.Error())
+		return
+	}
+	a.hub.publish(c.TaskID)
 	a.writeNoContent(w)
 }
 

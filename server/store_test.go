@@ -358,3 +358,77 @@ func TestPasswordMinLength(t *testing.T) {
 		t.Fatalf("改密 ≥6 位应通过: %v", err)
 	}
 }
+
+// TestCommentLifecycle 评论：发表顶层+回复 → 归属校验 → 删父级联回复 → 删任务级联清评论。
+func TestCommentLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	alice := reg(t, s, "alice")
+	bob := reg(t, s, "bob")
+	ts := time.Now().UTC().Format(time.RFC3339)
+	t1 := Task{ID: newID(), Title: "t1", Content: "", Status: StatusTodo, Position: 1, CreatedAt: ts, UpdatedAt: ts}
+	if _, err := s.CreateTask(t1); err != nil {
+		t.Fatal(err)
+	}
+	add := func(userID, parentID, content string) *Comment {
+		t.Helper()
+		c := Comment{ID: newID(), TaskID: t1.ID, UserID: userID, ParentID: parentID, Content: content, CreatedAt: ts, UpdatedAt: ts}
+		if err := s.AddComment(c); err != nil {
+			t.Fatalf("AddComment: %v", err)
+		}
+		return &c
+	}
+	top := add(alice.ID, "", "这个任务先做前置调研")
+	reply := add(bob.ID, top.ID, "我来补充背景资料")
+	_ = add(alice.ID, "", "记得同步到文档")
+
+	// 读取：按时间正序，含 author 展示名
+	all, err := s.ListComments(t1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("want 3 comments, got %d", len(all))
+	}
+	if all[0].Author != "展示alice" || all[1].Author != "展示bob" {
+		t.Fatalf("author mismatch: %+v", all)
+	}
+	if all[1].ParentID != top.ID {
+		t.Fatalf("reply parent wrong: %q", all[1].ParentID)
+	}
+
+	// 归属：GetComment 带作者
+	got, err := s.GetComment(top.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetComment: %v %v", got, err)
+	}
+	if got.UserID != alice.ID || got.Content != "这个任务先做前置调研" {
+		t.Fatalf("comment fields wrong: %+v", got)
+	}
+
+	// 编辑
+	if err := s.UpdateComment(reply.ID, "已补充完毕", ts); err != nil {
+		t.Fatal(err)
+	}
+	gotReply, _ := s.GetComment(reply.ID)
+	if gotReply.Content != "已补充完毕" {
+		t.Fatalf("update failed: %+v", gotReply)
+	}
+
+	// 删除父评论 → 回复级联消失（外键 ON DELETE CASCADE）
+	if err := s.DeleteComment(top.ID); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := s.ListComments(t1.ID)
+	if len(left) != 1 {
+		t.Fatalf("after delete parent want 1, got %d", len(left))
+	}
+
+	// 删任务 → 评论全清
+	if err := s.DeleteTask(t1.ID); err != nil {
+		t.Fatal(err)
+	}
+	left, _ = s.ListComments(t1.ID)
+	if len(left) != 0 {
+		t.Fatalf("after task delete want 0, got %d", len(left))
+	}
+}

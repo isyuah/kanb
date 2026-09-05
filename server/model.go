@@ -101,6 +101,19 @@ type Activity struct {
 	CreatedAt  string `json:"createdAt"`
 }
 
+// Comment 任务评论/回复。ParentID 为空 = 顶层评论；非空 = 对某条评论的回复。
+// UserID 为作者 user_id（匿名回落时为空串），Author 为展示名（JOIN users）。
+type Comment struct {
+	ID        string `json:"id"`
+	TaskID    string `json:"taskId"`
+	UserID    string `json:"userId,omitempty"`
+	ParentID  string `json:"parentId,omitempty"`
+	Author    string `json:"author"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
 type TaskInput struct {
 	Title   string   `json:"title"`
 	Content string   `json:"content"`

@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS activities (
 );
 CREATE INDEX IF NOT EXISTS idx_activities_created ON activities(created_at);
 
+CREATE TABLE IF NOT EXISTS comments (
+  id         TEXT PRIMARY KEY,
+  task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id    TEXT REFERENCES users(id) ON DELETE SET NULL, -- NULL=匿名/已注销
+  parent_id  TEXT REFERENCES comments(id) ON DELETE CASCADE, -- NULL=顶层评论
+  content    TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 2000),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL DEFAULT '',
@@ -590,6 +602,66 @@ func (s *Store) UpdateProgress(p Progress) error {
 
 func (s *Store) DeleteProgress(id string) error {
 	_, err := s.db.Exec(`DELETE FROM progress WHERE id=?`, id)
+	return err
+}
+
+// ---- 评论 ----
+
+// ListComments 某任务的全部评论（含回复），按时间正序（顶层与回复交错统一按 created_at）。
+// 返回扁平列表，parent_id 由前端组装回复树。
+func (s *Store) ListComments(taskID string) ([]Comment, error) {
+	rows, err := s.db.Query(`SELECT c.id,c.task_id,COALESCE(c.user_id,''),
+        COALESCE(NULLIF(c.parent_id,''),''),COALESCE(u.display_name,'已注销'),
+        c.content,c.created_at,c.updated_at
+        FROM comments c LEFT JOIN users u ON u.id=c.user_id
+        WHERE c.task_id = ?
+        ORDER BY c.created_at ASC`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Comment{}
+	for rows.Next() {
+		var c Comment
+		if err := rows.Scan(&c.ID, &c.TaskID, &c.UserID, &c.ParentID, &c.Author,
+			&c.Content, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddComment(c Comment) error {
+	_, err := s.db.Exec(`INSERT INTO comments (id,task_id,user_id,parent_id,content,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?)`,
+		c.ID, c.TaskID, nullStr(c.UserID), nullStr(c.ParentID), c.Content, c.CreatedAt, c.UpdatedAt)
+	return err
+}
+
+func (s *Store) GetComment(id string) (*Comment, error) {
+	var c Comment
+	err := s.db.QueryRow(`SELECT c.id,c.task_id,COALESCE(c.user_id,''),
+        COALESCE(NULLIF(c.parent_id,''),''),COALESCE(u.display_name,'已注销'),
+        c.content,c.created_at,c.updated_at
+        FROM comments c LEFT JOIN users u ON u.id=c.user_id
+        WHERE c.id=?`, id).
+		Scan(&c.ID, &c.TaskID, &c.UserID, &c.ParentID, &c.Author,
+			&c.Content, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &c, err
+}
+
+func (s *Store) UpdateComment(id, content, ts string) error {
+	_, err := s.db.Exec(`UPDATE comments SET content=?,updated_at=? WHERE id=?`, content, ts, id)
+	return err
+}
+
+// DeleteComment 物理删除评论；回复经外键 ON DELETE CASCADE 一并清除。
+func (s *Store) DeleteComment(id string) error {
+	_, err := s.db.Exec(`DELETE FROM comments WHERE id=?`, id)
 	return err
 }
 

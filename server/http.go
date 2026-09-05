@@ -305,6 +305,7 @@ func (a *app) routes() http.Handler {
 
 	// ===== 动态 =====
 	mux.HandleFunc("GET /api/activities", a.gateRead(a.handleActivities))
+	mux.HandleFunc("GET /api/tasks/{id}/activities", a.gateRead(a.handleTaskActivities))
 	mux.HandleFunc("GET /api/stats", a.gateRead(a.handleStats))
 
 	// ===== SSE =====
@@ -879,6 +880,21 @@ func (a *app) handleActivities(w http.ResponseWriter, r *http.Request) {
 	acts, err := a.store.ListActivities(limit)
 	if err != nil {
 		a.writeErr(w, 500, "读取动态失败: "+err.Error())
+		return
+	}
+	a.writeJSON(w, 200, acts)
+}
+
+// handleTaskActivities 某任务的操作时间线（完整历史，非全局最近截断）。
+func (a *app) handleTaskActivities(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+	}
+	acts, err := a.store.ListActivitiesByTask(id, limit)
+	if err != nil {
+		a.writeErr(w, 500, "读取任务动态失败: "+err.Error())
 		return
 	}
 	a.writeJSON(w, 200, acts)

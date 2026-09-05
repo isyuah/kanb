@@ -842,6 +842,33 @@ func (s *Store) ListActivities(limit int) ([]Activity, error) {
 	return out, rows.Err()
 }
 
+// ListActivitiesByTask 某任务的活动动态（按时间倒序），供任务详情时间线使用。
+func (s *Store) ListActivitiesByTask(taskID string, limit int) ([]Activity, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.Query(`SELECT a.id,a.action,a.target,a.target_id,a.task_title,
+        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),a.created_at
+        FROM activities a LEFT JOIN users u ON u.id=a.user_id
+        WHERE a.target_id = ?
+        ORDER BY a.created_at DESC LIMIT ?`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.Action, &a.Target, &a.TargetID, &a.TaskTitle,
+			&a.UserID, &a.AuthorName, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.Author = a.AuthorName // 兼容旧字段
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func nullStr(s string) any {
 	if s == "" {
 		return nil

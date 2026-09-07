@@ -2,6 +2,7 @@
 server/*.exe
 server/*.db
 server/webdist/
+*.exe~
 
 # Node
 web/node_modules/

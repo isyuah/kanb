@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type View = 'board' | 'graph' | 'calendar' | 'stats' | 'trash' | 'users' | 'settings'
+export type View = 'board' | 'graph' | 'calendar' | 'stats' | 'report' | 'trash' | 'users' | 'settings'
 export type Filter = 'all' | 'mine' | 'overdue'
 
 interface UIState {

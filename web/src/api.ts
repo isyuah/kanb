@@ -3,6 +3,7 @@ import type {
   AuthResult,
   Comment,
   ProgressEntry,
+  ReportResult,
   Settings,
   Stats,
   Task,
@@ -98,7 +99,7 @@ export const api = {
     request<User>('/me', {
       method: 'PUT',
       body: JSON.stringify({
-        displayName: patch.displayName ?? '',
+        ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
         ...(patch.oldPassword ? { oldPassword: patch.oldPassword } : {}),
         newPassword: patch.password ?? '',
       }),
@@ -182,6 +183,15 @@ export const api = {
   /** 某任务完整操作时间线（后端按 target_id 过滤，非全局截断） */
   taskActivities: (taskId: string, limit = 200) =>
     request<Activity[]>(`/tasks/${taskId}/activities?limit=${limit}`),
+
+  /* ---------------- 报表 ---------------- */
+  /** 半周报：窗口 [from,to) + 可选成员；后端只出结构化事件，前端渲染 */
+  semiweeklyReport: (from: string, to: string, members?: string[]) =>
+    request<ReportResult>(
+      `/reports/semiweekly?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${
+        members && members.length ? `&members=${members.map(encodeURIComponent).join(',')}` : ''
+      }`,
+    ),
 
   /* ---------------- 评论 ---------------- */
   listComments: (taskId: string) => request<Comment[]>(`/tasks/${taskId}/comments`),

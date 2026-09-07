@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS activities (
   target_id  TEXT NOT NULL,
   task_title TEXT NOT NULL DEFAULT '',         -- 审计快照（3NF 论证见 docs/db-design.md §4.4）
   user_id    TEXT REFERENCES users(id) ON DELETE SET NULL, -- NULL=匿名/已注销
+  detail     TEXT,                             -- 可选 JSON 快照（report 用）：{f,t,p,text,dep,n,...}
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activities_created ON activities(created_at);
@@ -209,6 +210,18 @@ func openStore(db *sql.DB, kind DBKind) (*Store, error) {
 	if _, err := db.Exec(s.bind(schema)); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// 老库兼容：给既有 activities 表补 detail 列（幂等；SQLite 支持 ADD COLUMN，
+	// PG 上 CREATE TABLE IF NOT EXISTS 不会改旧表——部署库由迁移流程保证）。
+	// 注意本段方言：ALTER 无占位符，仅 SQLite 需要；PG 上若缺列属迁移遗漏，报错暴露。
+	if kind == KindSQLite {
+		if _, err := db.Exec(`ALTER TABLE activities ADD COLUMN detail TEXT`); err != nil {
+			// 列已存在（duplicate column）或全新库已含该列 → 忽略；其余错误上抛
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				db.Close()
+				return nil, err
+			}
+		}
 	}
 	return s, nil
 }
@@ -984,8 +997,8 @@ func (s *Store) Stats() (*Stats, error) {
 // ---- 动态 ----
 
 func (s *Store) AddActivity(a Activity) error {
-	_, err := s.exec(s.db, `INSERT INTO activities (id,action,target,target_id,task_title,user_id,created_at) VALUES (?,?,?,?,?,?,?)`,
-		a.ID, a.Action, a.Target, a.TargetID, a.TaskTitle, nullStr(a.UserID), a.CreatedAt)
+	_, err := s.exec(s.db, `INSERT INTO activities (id,action,target,target_id,task_title,user_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		a.ID, a.Action, a.Target, a.TargetID, a.TaskTitle, nullStr(a.UserID), nullStr(a.Detail), a.CreatedAt)
 	return err
 }
 
@@ -995,7 +1008,7 @@ func (s *Store) ListActivities(limit int) ([]Activity, error) {
 		limit = 200
 	}
 	rows, err := s.query(s.db, `SELECT a.id,a.action,a.target,a.target_id,a.task_title,
-        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),a.created_at
+        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),COALESCE(a.detail,''),a.created_at
         FROM activities a LEFT JOIN users u ON u.id=a.user_id
         ORDER BY a.created_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -1006,7 +1019,7 @@ func (s *Store) ListActivities(limit int) ([]Activity, error) {
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Action, &a.Target, &a.TargetID, &a.TaskTitle,
-			&a.UserID, &a.AuthorName, &a.CreatedAt); err != nil {
+			&a.UserID, &a.AuthorName, &a.Detail, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		a.Author = a.AuthorName // 兼容旧字段
@@ -1021,7 +1034,7 @@ func (s *Store) ListActivitiesByTask(taskID string, limit int) ([]Activity, erro
 		limit = 200
 	}
 	rows, err := s.query(s.db, `SELECT a.id,a.action,a.target,a.target_id,a.task_title,
-        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),a.created_at
+        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),COALESCE(a.detail,''),a.created_at
         FROM activities a LEFT JOIN users u ON u.id=a.user_id
         WHERE a.target_id = ?
         ORDER BY a.created_at DESC LIMIT ?`, taskID, limit)
@@ -1033,10 +1046,43 @@ func (s *Store) ListActivitiesByTask(taskID string, limit int) ([]Activity, erro
 	for rows.Next() {
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Action, &a.Target, &a.TargetID, &a.TaskTitle,
-			&a.UserID, &a.AuthorName, &a.CreatedAt); err != nil {
+			&a.UserID, &a.AuthorName, &a.Detail, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		a.Author = a.AuthorName // 兼容旧字段
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ReportEvents 报表事件查询：返回 [from,to) 窗口内、指定成员（空=全部）的
+// 可汇报操作动态（按时间正序）。detail 随行返回，供报表端解析动作语义。
+func (s *Store) ReportEvents(from, to string, memberIDs []string) ([]Activity, error) {
+	q := `SELECT a.id,a.action,a.target,a.target_id,a.task_title,
+        COALESCE(a.user_id,''),COALESCE(u.display_name,'已注销'),COALESCE(a.detail,''),a.created_at
+        FROM activities a LEFT JOIN users u ON u.id=a.user_id
+        WHERE a.target = 'task' AND a.user_id IS NOT NULL AND a.created_at >= ? AND a.created_at < ?`
+	args := []any{from, to}
+	if len(memberIDs) > 0 {
+		q += ` AND a.user_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(memberIDs)), ",") + `)`
+		for _, id := range memberIDs {
+			args = append(args, id)
+		}
+	}
+	q += ` ORDER BY a.created_at ASC, a.id ASC`
+	rows, err := s.query(s.db, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.Action, &a.Target, &a.TargetID, &a.TaskTitle,
+			&a.UserID, &a.AuthorName, &a.Detail, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.Author = a.AuthorName
 		out = append(out, a)
 	}
 	return out, rows.Err()

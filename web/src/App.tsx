@@ -19,6 +19,7 @@ import TrashPage from './pages/TrashPage'
 import UsersPage from './pages/UsersPage'
 import SettingsPage from './pages/SettingsPage'
 import StatsPage from './pages/StatsPage'
+import ReportPage from './pages/ReportPage'
 
 const { Content } = Layout
 
@@ -51,6 +52,12 @@ export default function App() {
         return <CalendarPage />
       case 'stats':
         return <StatsPage />
+      case 'report':
+        return user ? (
+          <ReportPage />
+        ) : (
+          <Result status="403" title="无权访问" subTitle="报表需登录后使用" />
+        )
       case 'trash':
         return isAdmin(user) || (user && user.role === 'member') ? (
           <TrashPage />

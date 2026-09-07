@@ -173,6 +173,27 @@ export interface UserPatch {
   disabled?: boolean
 }
 
+/* ---------------- 报表 ---------------- */
+
+export interface ReportEvent {
+  at: string // ISO8601 UTC
+  userId?: string
+  userName: string
+  action: string
+  taskId: string
+  taskTitle: string
+  detail?: string | Record<string, unknown> // 动作语义快照
+}
+
+export interface ReportResult {
+  reportId: string
+  title: string
+  from: string
+  to: string
+  generatedAt: string
+  events: ReportEvent[]
+}
+
 export const ROLES: Role[] = ['admin', 'member', 'viewer']
 
 export const ROLE_LABELS: Record<Role, string> = {

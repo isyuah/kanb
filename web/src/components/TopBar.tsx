@@ -6,6 +6,7 @@ import {
   CalendarOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
+  FileTextOutlined,
   LogoutOutlined,
   PlusOutlined,
   SearchOutlined,
@@ -25,6 +26,7 @@ const VIEW_OPTIONS: { value: View; label: string; icon: React.ReactNode }[] = [
   { value: 'graph', label: '依赖图', icon: <ApartmentOutlined /> },
   { value: 'calendar', label: '日历', icon: <CalendarOutlined /> },
   { value: 'stats', label: '统计', icon: <BarChartOutlined /> },
+  { value: 'report', label: '报表', icon: <FileTextOutlined /> },
 ]
 
 export default function TopBar() {

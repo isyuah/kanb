@@ -89,6 +89,14 @@ type Progress struct {
 
 // Activity 操作动态。UserID 可为空（对应用户被物理删除后 user_id 置 NULL），
 // Author/AuthorName 均为展示名：user_id 为 NULL 时显示「已注销」。
+// Detail 为可选 JSON 快照（写操作当场落库，供报表精确还原动作语义）：
+//
+//	{f,t}            状态迁移 from/to（status_changed）
+//	{p,text}         进度 percent + 说明（progress 增/改）
+//	{title}          建任务；{content} 编辑正文；{title} 编辑标题
+//	{tags} 标签集；{due} 截止 YYYY-MM-DD（空=清除）；{archived} 归档标记
+//	{dep}            依赖目标任务 id（dep_added/removed）
+//	{n}              拖拽列排序的 ids 数（reordered）
 type Activity struct {
 	ID         string `json:"id"`
 	Action     string `json:"action"`
@@ -98,6 +106,7 @@ type Activity struct {
 	UserID     string `json:"userId,omitempty"`
 	Author     string `json:"author"`
 	AuthorName string `json:"authorName"`
+	Detail     string `json:"detail,omitempty"`
 	CreatedAt  string `json:"createdAt"`
 }
 

@@ -209,12 +209,19 @@ func writeAuthor(r *http.Request) (userID, displayName string) {
 }
 
 // recordActivity 记录动态：author 现取 user_id（display_name 冗余在 JOIN 时取）。
-func (a *app) recordActivity(r *http.Request, action, target, targetID string) {
+// detail 可选：写操作发生时当场快照的动作语义（JSON），供报表精确还原。
+func (a *app) recordActivity(r *http.Request, action, target, targetID string, detail ...any) {
 	userID, _ := writeAuthor(r)
 	if userID == "" {
 		return // 匿名且非 open 模式等边缘情况：不记录
 	}
 	title := a.store.TaskTitle(targetID)
+	var detailStr string
+	if len(detail) > 0 && detail[0] != nil {
+		if b, err := json.Marshal(detail[0]); err == nil {
+			detailStr = string(b)
+		}
+	}
 	act := Activity{
 		ID:        newID(),
 		Action:    action,
@@ -222,6 +229,7 @@ func (a *app) recordActivity(r *http.Request, action, target, targetID string) {
 		TargetID:  targetID,
 		TaskTitle: title,
 		UserID:    userID,
+		Detail:    detailStr,
 		CreatedAt: now(),
 	}
 	if err := a.store.AddActivity(act); err != nil {
@@ -314,6 +322,9 @@ func (a *app) routes() http.Handler {
 
 	// ===== SSE =====
 	mux.HandleFunc("GET /api/events", a.handleEvents)
+
+	// ===== 报表（插件点）=====
+	a.registerReportRoutes(mux)
 
 	return a.withCommon(mux)
 }
@@ -432,19 +443,24 @@ func (a *app) handleGetMe(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		DisplayName string `json:"displayName"`
-		OldPassword string `json:"oldPassword"`
-		NewPassword string `json:"newPassword"`
+		DisplayName *string `json:"displayName"` // 可选：提供才改展示名
+		OldPassword string  `json:"oldPassword"`
+		NewPassword string  `json:"newPassword"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		a.writeErr(w, 400, "请求体解析失败")
 		return
 	}
 	me := currentUser(r)
-	in.DisplayName = strings.TrimSpace(in.DisplayName)
-	if in.DisplayName == "" {
-		a.writeErr(w, 400, "展示名不能为空")
-		return
+	var newName string
+	if in.DisplayName != nil {
+		newName = strings.TrimSpace(*in.DisplayName)
+		if newName == "" {
+			a.writeErr(w, 400, "展示名不能为空")
+			return
+		}
+	} else {
+		newName = me.DisplayName // 未提供 → 保持原展示名
 	}
 	if in.NewPassword != "" {
 		ok, err := a.store.CheckPassword(me.ID, in.OldPassword)
@@ -457,7 +473,7 @@ func (a *app) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	updated, err := a.store.UpdateSelf(me.ID, in.DisplayName, in.NewPassword)
+	updated, err := a.store.UpdateSelf(me.ID, newName, in.NewPassword)
 	if err != nil {
 		a.writeErr(w, 500, "更新失败: "+err.Error())
 		return
@@ -567,7 +583,7 @@ func (a *app) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if uid != "" {
-		a.recordActivity(r, "created", "task", created.ID)
+		a.recordActivity(r, "created", "task", created.ID, map[string]string{"title": created.Title, "status": string(created.Status)})
 	}
 	a.writeJSON(w, 201, created)
 }
@@ -614,7 +630,7 @@ func (a *app) handleSoftDeleteTask(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "删除失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "deleted", "task", id)
+	a.recordActivity(r, "deleted", "task", id, map[string]string{"title": existing.Title})
 	a.writeNoContent(w)
 }
 
@@ -650,7 +666,7 @@ func (a *app) handleClaim(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "认领失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "claimed", "task", id)
+	a.recordActivity(r, "claimed", "task", id, map[string]string{"who": uid})
 	a.writeNoContent(w)
 }
 
@@ -665,7 +681,7 @@ func (a *app) handleUnclaim(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "取消认领失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "unclaimed", "task", id)
+	a.recordActivity(r, "unclaimed", "task", id, map[string]string{"who": uid})
 	a.writeNoContent(w)
 }
 
@@ -694,7 +710,7 @@ func (a *app) handleAddProgress(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "添加进度失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "progress", "task", id)
+	a.recordActivity(r, "progress", "task", id, map[string]any{"p": in.Percent, "text": in.Text})
 	// 返回完整记录（含 author 展示名）
 	created, _ := a.store.GetProgress(p.ID)
 	if created == nil {
@@ -734,7 +750,7 @@ func (a *app) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "更新失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "progress_updated", "task", p.TaskID)
+	a.recordActivity(r, "progress_updated", "task", p.TaskID, map[string]any{"p": p.Percent, "text": p.Text, "id": p.ID})
 	a.writeJSON(w, 200, p)
 }
 
@@ -754,7 +770,7 @@ func (a *app) handleDeleteProgress(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "删除失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "progress_deleted", "task", p.TaskID)
+	a.recordActivity(r, "progress_deleted", "task", p.TaskID, map[string]any{"p": p.Percent, "text": p.Text, "id": p.ID})
 	a.writeNoContent(w)
 }
 
@@ -912,7 +928,7 @@ func (a *app) handleAddDep(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "添加依赖失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "dep_added", "task", id)
+	a.recordActivity(r, "dep_added", "task", id, map[string]string{"dep": in.DepID})
 	a.writeNoContent(w)
 }
 
@@ -923,7 +939,7 @@ func (a *app) handleRemoveDep(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "移除依赖失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "dep_removed", "task", id)
+	a.recordActivity(r, "dep_removed", "task", id, map[string]string{"dep": depID})
 	a.writeNoContent(w)
 }
 
@@ -949,7 +965,7 @@ func (a *app) handleRestore(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "恢复失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "restored", "task", id)
+	a.recordActivity(r, "restored", "task", id, map[string]string{"title": existing.Title})
 	a.writeJSON(w, 200, map[string]string{"id": id})
 }
 
@@ -1081,6 +1097,25 @@ func (a *app) handleTaskPatch(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 400, "请求体解析失败")
 		return
 	}
+	// 收集本次变更（detail 快照：状态迁移/标题/正文/标签/截止/归档）
+	type patchDetail struct {
+		F   *Status  `json:"f,omitempty"` // 原状态
+		T   *Status  `json:"t,omitempty"` // 新状态
+		Old *string  `json:"old,omitempty"`
+		New *string  `json:"new,omitempty"`
+		Tag *[]string `json:"tags,omitempty"`
+		Due *string  `json:"due,omitempty"`
+		Arc *bool    `json:"arc,omitempty"`
+	}
+	var pd patchDetail
+	origStatus, origTitle, origContent := existing.Status, existing.Title, existing.Content
+	var origDue *string
+	if existing.DueDate != nil {
+		d := *existing.DueDate
+		origDue = &d
+	}
+	origArchived := existing.Archived
+
 	if p.Title != nil {
 		title := strings.TrimSpace(*p.Title)
 		if title == "" {
@@ -1127,7 +1162,47 @@ func (a *app) handleTaskPatch(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "更新失败: "+err.Error())
 		return
 	}
-	a.recordActivity(r, "updated", "task", id)
+	if origStatus != existing.Status {
+		f, t := origStatus, existing.Status
+		pd.F, pd.T = &f, &t
+	}
+	if origTitle != existing.Title {
+		old, neu := origTitle, existing.Title
+		pd.Old, pd.New = &old, &neu
+	}
+	if origContent != existing.Content {
+		old, neu := origContent, existing.Content
+		// 内容变更只记录前后缀/长度，避免整文入 detail
+		const cut = 80
+		snip := func(x string) string {
+			if len(x) > cut {
+				return x[:cut] + "…"
+			}
+			return x
+		}
+		old, neu = snip(old), snip(neu)
+		pd.Old, pd.New = &old, &neu
+	}
+	if (origDue == nil) != (existing.DueDate == nil) || (origDue != nil && existing.DueDate != nil && *origDue != *existing.DueDate) {
+		var d string
+		if existing.DueDate != nil {
+			d = *existing.DueDate
+		}
+		pd.Due = &d
+	}
+	if p.Tags != nil {
+		tags := append([]string(nil), existing.Tags...)
+		pd.Tag = &tags
+	}
+	if origArchived != existing.Archived {
+		arc := existing.Archived
+		pd.Arc = &arc
+	}
+	if pd.F != nil || pd.T != nil || pd.Old != nil || pd.New != nil || pd.Tag != nil || pd.Due != nil || pd.Arc != nil {
+		a.recordActivity(r, "updated", "task", id, pd)
+	} else {
+		a.recordActivity(r, "updated", "task", id)
+	}
 	a.hub.publish(id)
 	updated, err := a.store.GetTask(id)
 	if err != nil {

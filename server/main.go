@@ -52,6 +52,13 @@ func main() {
 	} else {
 		fileServer := http.FileServer(http.FS(distFS))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// 带内容 hash 的构建产物（/assets/*）可永久缓存：文件名变=内容变，
+			// 不存在过期失效问题。HTML/favicon 等不缓存，保证 SPA 入口始终新鲜。
+			if strings.HasPrefix(r.URL.Path, "/assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			// SPA fallback: serve index.html for non-file paths
 			p := path.Clean(r.URL.Path)
 			if p == "/" {

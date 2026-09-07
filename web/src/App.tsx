@@ -103,7 +103,7 @@ export default function App() {
       {locked ? (
         <LoginGate />
       ) : (
-        <Layout style={{ minHeight: '100vh' }}>
+        <Layout style={{ height: '100vh' }}>
           <TopBar />
           <Content
             style={{
@@ -111,7 +111,7 @@ export default function App() {
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
-              height: 'calc(100vh - 60px)',
+              flex: 1,
               overflow: 'auto',
             }}
           >

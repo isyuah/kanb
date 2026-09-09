@@ -19,7 +19,8 @@ import (
 
 // schema 为全量库表定义：users/roles/user_roles/sessions/tags/task_tags/
 // tasks/claims/progress/deps/activities/settings 共 12 表，满足 3NF，见 docs/db-design.md。
-// 注意：SQLite 不支持修改列，本 schema 只在全新库上执行（历史数据迁移需另做，见 docs）。
+// 注意：SQLite 不支持修改列，本 schema 只在全新库上执行（历史数据迁移需另做，见 docs）；
+// 例外：tasks.status 的 CHECK 由 migrateTasksStatusCheck 在启动时自动重建升级。
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,              -- 纳秒时间戳字符串主键
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL,
   content    TEXT NOT NULL DEFAULT '',
-  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done')),
+  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done','abandoned')),
   position   REAL NOT NULL DEFAULT 0,
   due_date   TEXT,                             -- YYYY-MM-DD
   archived   INTEGER NOT NULL DEFAULT 0,
@@ -222,8 +223,70 @@ func openStore(db *sql.DB, kind DBKind) (*Store, error) {
 				return nil, err
 			}
 		}
+		// 老库 tasks.status CHECK 缺 abandoned → 整表重建（SQLite 无法原地改 CHECK）。
+		// 幂等：仅当 tasks 定义不含新状态时执行，见 migrateTasksStatusCheck。
+		if err := migrateTasksStatusCheck(db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
+}
+
+// migrateTasksStatusCheck 幂等迁移：tasks.status CHECK 增加 'abandoned'。
+// SQLite 不支持 ALTER 改约束，只能「建新表→搬数据→换名」重建；外键关闭须在事务外
+// （连接级 PRAGMA，连接池 MaxOpenConns=1 全程同一连接）。仅 SQLite 需要；
+// PG 部署库用 ALTER 迁移，SQL 见 docs/db-design.md §数据迁移。
+func migrateTasksStatusCheck(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'`).Scan(&ddl); err != nil {
+		return err
+	}
+	if strings.Contains(ddl, "'abandoned'") {
+		return nil // 已含新状态：全新库或已迁移
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// 新表 DDL 必须与 schema 常量中 tasks 保持一致（含扩展 CHECK），勿单方改动。
+	steps := []string{
+		`CREATE TABLE tasks_new (
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  content    TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done','abandoned')),
+  position   REAL NOT NULL DEFAULT 0,
+  due_date   TEXT,
+  archived   INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`,
+		`INSERT INTO tasks_new (id,title,content,status,position,due_date,archived,deleted_at,created_by,created_at,updated_at)
+  SELECT id,title,content,status,position,due_date,archived,deleted_at,created_by,created_at,updated_at FROM tasks`,
+		`DROP TABLE tasks`,
+		`ALTER TABLE tasks_new RENAME TO tasks`,
+		`CREATE INDEX idx_tasks_status ON tasks(status)`,
+		`CREATE INDEX idx_tasks_archived ON tasks(archived)`,
+		`CREATE INDEX idx_tasks_deleted ON tasks(deleted_at)`,
+		`CREATE INDEX idx_tasks_createdby ON tasks(created_by)`,
+	}
+	for _, q := range steps {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`PRAGMA foreign_keys=ON`)
+	return err
 }
 
 func envInt(key string, def int) int {
@@ -883,7 +946,7 @@ func (s *Store) WouldCycle(taskID, depID string) (bool, error) {
 func (s *Store) Stats() (*Stats, error) {
 	out := &Stats{ByStatus: []TaskStat{}, ByTag: []TagStat{}, ByCreator: []CreatorStat{}, ByMember: []MemberWorkload{}}
 
-	// 总数 + 状态分布（未删未归档）
+	// 总数 + 状态分布（未删未归档；废弃单列计数，不进活跃口径）
 	rows, err := s.query(s.db, `SELECT status, COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 GROUP BY status`)
 	if err != nil {
 		return nil, err
@@ -894,6 +957,10 @@ func (s *Store) Stats() (*Stats, error) {
 		if err := rows.Scan(&st, &n); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if st == string(StatusAbandoned) {
+			out.Abandoned = n
+			continue
 		}
 		out.TaskTotal += n
 		switch st {
@@ -912,15 +979,15 @@ func (s *Store) Stats() (*Stats, error) {
 	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=1`).Scan(&out.Archived); err != nil {
 		return nil, err
 	}
-	// 逾期数（未完成且 due_date < 今天）
+	// 逾期数（活跃未完成且 due_date < 今天；终态 done/abandoned 不逾期）
 	today := time.Now().UTC().Format("2006-01-02")
-	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 AND status<>'done' AND due_date IS NOT NULL AND due_date<?`, today).Scan(&out.Overdue); err != nil {
+	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL AND archived=0 AND status<>'done' AND status<>'abandoned' AND due_date IS NOT NULL AND due_date<?`, today).Scan(&out.Overdue); err != nil {
 		return nil, err
 	}
 
-	// 任务平均进度：认领者的最新一条进度记录平均（无记录=0）
+	// 任务平均进度：活跃任务认领者的最新进度平均（无记录=0）
 	rows, err = s.query(s.db, `SELECT COALESCE(AVG(p.percent),0) FROM progress p
-		JOIN tasks t ON t.id=p.task_id WHERE t.deleted_at IS NULL AND t.archived=0`)
+		JOIN tasks t ON t.id=p.task_id WHERE t.deleted_at IS NULL AND t.archived=0 AND t.status<>'abandoned'`)
 	if err != nil {
 		return nil, err
 	}
@@ -932,11 +999,11 @@ func (s *Store) Stats() (*Stats, error) {
 	}
 	rows.Close()
 
-	// 标签分布（仅未删未归档任务）
+	// 标签分布（仅活跃任务：未删未归档未废弃）
 	rows, err = s.query(s.db, `SELECT tg.name, COUNT(*) FROM task_tags tt
 		JOIN tags tg ON tg.id=tt.tag_id
 		JOIN tasks t ON t.id=tt.task_id
-		WHERE t.deleted_at IS NULL AND t.archived=0
+		WHERE t.deleted_at IS NULL AND t.archived=0 AND t.status<>'abandoned'
 		GROUP BY tg.name ORDER BY COUNT(*) DESC`)
 	if err != nil {
 		return nil, err
@@ -951,10 +1018,10 @@ func (s *Store) Stats() (*Stats, error) {
 	}
 	rows.Close()
 
-	// 按创建人分布（匿名/无创建人计为「匿名」）
+	// 按创建人分布（匿名/无创建人计为「匿名」；仅活跃任务）
 	rows, err = s.query(s.db, `SELECT COALESCE(u.display_name,'匿名'), COUNT(*) FROM tasks t
 		LEFT JOIN users u ON u.id=t.created_by
-		WHERE t.deleted_at IS NULL AND t.archived=0
+		WHERE t.deleted_at IS NULL AND t.archived=0 AND t.status<>'abandoned'
 		GROUP BY t.created_by, u.display_name ORDER BY COUNT(*) DESC`)
 	if err != nil {
 		return nil, err
@@ -976,7 +1043,7 @@ func (s *Store) Stats() (*Stats, error) {
 		JOIN users u ON u.id=c.user_id
 		LEFT JOIN progress p ON p.task_id=c.task_id AND p.user_id=c.user_id
 		JOIN tasks t ON t.id=c.task_id
-		WHERE t.deleted_at IS NULL
+		WHERE t.deleted_at IS NULL AND t.status<>'abandoned'
 		GROUP BY c.user_id, u.display_name ORDER BY COUNT(DISTINCT c.task_id) DESC`)
 	if err != nil {
 		return nil, err

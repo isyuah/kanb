@@ -31,6 +31,7 @@ import { api } from '../../api'
 import { useKanban, usePerms } from '../../store'
 import { useUI } from '../../ui'
 import type { Activity, Status, Task, User } from '../../types'
+import { STATUS_ORDER, isClosed } from '../../status'
 import { avatarStyle } from '../../lib'
 import { claimIsMine, SectionTitle, statusColor, statusLabel, WriteGuard } from './taskShared'
 import { ContentSection } from './ContentSection'
@@ -100,7 +101,7 @@ function TaskDetailBody({
   const unclaimTask = useKanban((s) => s.unclaimTask)
 
   const claimed = task.claims.some((c) => claimIsMine(c, user))
-  const blockedBy = task.deps.filter((d) => d.status !== 'done')
+  const blockedBy = task.deps.filter((d) => !isClosed(d.status))
   const deletable = writable
   const editable = writable
   const [editTitle, setEditTitle] = useState(false)
@@ -284,11 +285,7 @@ function TaskDetailBody({
               value={task.status}
               disabled={!writable}
               onChange={(v) => act(async () => patchTask(task.id, { status: v as Status }))}
-              options={[
-                { value: 'todo', label: '待认领' },
-                { value: 'in_progress', label: '进行中' },
-                { value: 'done', label: '已完成' },
-              ]}
+              options={STATUS_ORDER.map((s) => ({ value: s, label: statusLabel(s) }))}
             />
           </WriteGuard>
           <div style={{ flex: 1 }} />

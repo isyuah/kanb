@@ -1,13 +1,7 @@
 import type { CSSProperties } from 'react'
 import dayjs from 'dayjs'
-import type { Status, Task, User } from './types'
-
-/** 状态展示元信息（看板色 + antd Tag 色） */
-export const statusMeta: Record<Status, { label: string; accent: string; antdColor: string }> = {
-  todo: { label: '待认领', accent: '#8c8c8c', antdColor: 'default' },
-  in_progress: { label: '进行中', accent: '#4f6ef7', antdColor: 'processing' },
-  done: { label: '已完成', accent: '#2fbf71', antdColor: 'success' },
-}
+import type { Task, User } from './types'
+import { isClosed } from './status'
 
 /** Deterministic pleasant color for a name. */
 const PALETTE = [
@@ -48,7 +42,7 @@ export function fmtDate(d: string): string {
 }
 
 export function isOverdue(t: Task): boolean {
-  if (!t.dueDate || t.status === 'done') return false
+  if (!t.dueDate || isClosed(t.status)) return false
   return dayjs(t.dueDate).isBefore(dayjs(), 'day')
 }
 
@@ -58,7 +52,7 @@ export function daysLeft(t: Task): number {
 }
 
 export function isBlocked(t: Task): boolean {
-  return t.deps.some((d) => d.status !== 'done')
+  return t.deps.some((d) => !isClosed(d.status))
 }
 
 /** 任务是否属于当前用户认领（优先 userId，兜底按认领人名匹配） */

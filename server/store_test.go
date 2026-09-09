@@ -475,3 +475,121 @@ func TestCommentLifecycle(t *testing.T) {
 		t.Fatalf("after task delete want 0, got %d", len(left))
 	}
 }
+
+// TestStatsAbandonedSeparate 废弃状态统计口径：单列计数，不进活跃总数/分布/逾期
+// /ByStatus；归档后的废弃任务只进 Archived 计数。
+func TestStatsAbandonedSeparate(t *testing.T) {
+	s := newTestStore(t)
+	ts := time.Now().UTC().Format(time.RFC3339)
+	mk := func(id, status string, due string) *Task {
+		t.Helper()
+		tk := Task{ID: id, Title: id, Status: Status(status), Position: 1, CreatedAt: ts, UpdatedAt: ts}
+		if due != "" {
+			tk.DueDate = &due
+		}
+		created, err := s.CreateTask(tk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	past := "2000-01-02" // 早已逾期：若非终态应计入 Overdue
+	mk("t-todo", "todo", "")
+	mk("t-done", "done", "")
+	mk("t-abd", "abandoned", past)
+
+	st, err := s.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TaskTotal != 2 || st.Todo != 1 || st.Done != 1 || st.Abandoned != 1 || st.Overdue != 0 {
+		t.Fatalf("废弃统计口径错误: %+v", st)
+	}
+	if len(st.ByStatus) != 2 {
+		t.Fatalf("ByStatus 长度=%d, want 2: %+v", len(st.ByStatus), st.ByStatus)
+	}
+	for _, bs := range st.ByStatus {
+		if bs.Status == "abandoned" {
+			t.Fatalf("ByStatus 不应含 abandoned: %+v", st.ByStatus)
+		}
+	}
+
+	// 归档的废弃任务：只进 Archived，不进 Abandoned
+	if err := s.UpdateTask(Task{ID: "t-abd", Title: "t-abd", Status: StatusAbandoned, Position: 1, Archived: true, UpdatedAt: ts}); err != nil {
+		t.Fatal(err)
+	}
+	st2, _ := s.Stats()
+	if st2.Abandoned != 0 || st2.Archived != 1 {
+		t.Fatalf("归档废弃后统计错误: %+v", st2)
+	}
+}
+
+// TestMigrateTasksStatusCheckRebuild 存量库自动迁移：旧 tasks CHECK（仅三状态）
+// 在 OpenStore 启动时重建为含 abandoned —— 数据保留、abandoned 可写、二次打开幂等。
+func TestMigrateTasksStatusCheckRebuild(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "kanb.db")
+	// 造一个仅含旧版 tasks 表（3 状态 CHECK）的存量库
+	db, err := sql.Open("sqlite", "file:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDDL := `CREATE TABLE tasks (
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  content    TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done')),
+  position   REAL NOT NULL DEFAULT 0,
+  due_date   TEXT,
+  archived   INTEGER NOT NULL DEFAULT 0,
+  deleted_at TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`
+	if _, err := db.Exec(oldDDL); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tasks (id,title,status,position,created_at,updated_at)
+		VALUES ('old1','遗留任务','todo',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// 打开触发自动迁移：遗留行保留，且 abandoned 可写
+	s, err := OpenStore(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.queryRow(s.db, `SELECT COUNT(*) FROM tasks WHERE id='old1' AND status='todo'`).Scan(&n); err != nil || n != 1 {
+		s.Close()
+		t.Fatalf("迁移后遗留任务丢失: n=%d err=%v", n, err)
+	}
+	if _, err := s.CreateTask(Task{ID: "new1", Title: "新废弃", Status: StatusAbandoned, Position: 1, CreatedAt: "2026-01-02T00:00:00Z", UpdatedAt: "2026-01-02T00:00:00Z"}); err != nil {
+		s.Close()
+		t.Fatalf("迁移后写 abandoned 失败: %v", err)
+	}
+	st, err := s.Stats()
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if st.Abandoned != 1 || st.TaskTotal != 1 {
+		s.Close()
+		t.Fatalf("迁移后统计错误: %+v", st)
+	}
+	s.Close()
+
+	// 幂等：二次打开不重复迁移、数据完整、索引仍在
+	s2, err := OpenStore(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s2.Close() })
+	if err := s2.queryRow(s2.db, `SELECT COUNT(*) FROM tasks`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("二次打开数据不完整: n=%d err=%v", n, err)
+	}
+}

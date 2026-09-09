@@ -16,6 +16,7 @@ import '@xyflow/react/dist/style.css'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
 import type { Task } from '../types'
+import { STATUS_META, isClosed } from '../status'
 import { avatarStyle, taskPercent } from '../lib'
 
 /** Extract the task payload from a React Flow node's data bag. */
@@ -28,26 +29,15 @@ function getNodeTask(n: Node): Task | undefined {
   return undefined
 }
 
-const STATUS_COLOR: Record<Task['status'], string> = {
-  todo: '#9aa0ad',
-  in_progress: '#4f6ef7',
-  done: '#2fbf71',
-}
-
-const STATUS_LABEL: Record<Task['status'], string> = {
-  todo: '待认领',
-  in_progress: '进行中',
-  done: '已完成',
-}
-
 const NODE_W = 230
 const NODE_H = 96
 
 function GraphNode({ data }: { data: { task: Task } }) {
   const { task } = data
   const pct = taskPercent(task)
-  const color = STATUS_COLOR[task.status]
-  const overdue = !!task.dueDate && task.status !== 'done' && new Date(task.dueDate).getTime() < Date.now()
+  const meta = STATUS_META[task.status]
+  const color = meta.accent
+  const overdue = !!task.dueDate && !isClosed(task.status) && new Date(task.dueDate).getTime() < Date.now()
   return (
     <>
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
@@ -124,8 +114,8 @@ function GraphNode({ data }: { data: { task: Task } }) {
           />
         )}
         <div style={{ display: 'flex', gap: 6 }}>
-          <Tag color={STATUS_COLOR[task.status]} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', border: 'none', color: '#fff' }}>
-            {STATUS_LABEL[task.status]}
+          <Tag color={meta.accent} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', border: 'none', color: '#fff' }}>
+            {meta.label}
           </Tag>
         </div>
       </div>
@@ -177,7 +167,8 @@ export default function DepGraph() {
           id: `${t.id}->${d.depId}`,
           source: d.depId,
           target: t.id,
-          animated: dep.status !== 'done',
+          // 前置未到终态（todo/in_progress）→ 流动动画表示「等待中」；终态静止
+          animated: !isClosed(dep.status),
           style: {
             stroke: dep.status === 'done' ? '#2fbf71' : dep.status === 'in_progress' ? '#4f6ef7' : '#b8bcc8',
             strokeWidth: 1.8,
@@ -220,7 +211,7 @@ export default function DepGraph() {
           zoomable
           nodeColor={(n) => {
             const t = getNodeTask(n)
-            return t ? STATUS_COLOR[t.status] : '#c9cdd8'
+            return t ? STATUS_META[t.status].accent : '#c9cdd8'
           }}
         />
       </ReactFlow>

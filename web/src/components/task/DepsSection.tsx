@@ -4,6 +4,7 @@ import { LinkOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/ico
 import { useKanban } from '../../store'
 import { useUI } from '../../ui'
 import type { Task } from '../../types'
+import { STATUS_META, isClosed } from '../../status'
 import { statusLabel } from './taskShared'
 
 const { Text } = Typography
@@ -28,7 +29,7 @@ export function DepsSection({
   const candidates = useMemo(() => {
     const existing = new Set(task.deps.map((d) => d.depId))
     return tasks.filter(
-      (t) => t.id !== task.id && !existing.has(t.id) && !t.archived && t.status !== 'done',
+      (t) => t.id !== task.id && !existing.has(t.id) && !t.archived && !isClosed(t.status),
     )
   }, [tasks, task])
 
@@ -61,12 +62,17 @@ export function DepsSection({
                 alignItems: 'center',
                 gap: 8,
                 padding: '6px 10px',
-                background: d.status === 'done' ? 'rgba(47,191,113,0.06)' : 'rgba(31,36,48,0.03)',
+                background:
+                  d.status === 'done'
+                    ? 'rgba(47,191,113,0.06)'
+                    : isClosed(d.status)
+                      ? 'rgba(176,106,79,0.07)'
+                      : 'rgba(31,36,48,0.03)',
                 borderRadius: 8,
               }}
             >
               <Tag
-                color={d.status === 'done' ? 'success' : 'default'}
+                color={STATUS_META[d.status].antdColor}
                 style={{ marginInlineEnd: 0, width: 56, textAlign: 'center' }}
               >
                 {statusLabel(d.status)}
@@ -76,8 +82,8 @@ export function DepsSection({
                 style={{
                   fontSize: 13,
                   flex: 1,
-                  textDecoration: d.status === 'done' ? 'line-through' : 'none',
-                  opacity: d.status === 'done' ? 0.6 : 1,
+                  textDecoration: isClosed(d.status) ? 'line-through' : 'none',
+                  opacity: isClosed(d.status) ? 0.6 : 1,
                   cursor: 'pointer',
                 }}
                 onClick={() => useUI.getState().openTask(d.depId)}

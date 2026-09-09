@@ -1,4 +1,4 @@
-export type Status = 'todo' | 'in_progress' | 'done'
+export type Status = 'todo' | 'in_progress' | 'done' | 'abandoned'
 
 export type Role = 'admin' | 'member' | 'viewer'
 
@@ -133,6 +133,8 @@ export interface Stats {
   todo: number
   inProgress: number
   done: number
+  /** 废弃任务数（单列计数，不进活跃口径） */
+  abandoned: number
   overdue: number
   archived: number
   avgTaskPct: number
@@ -214,16 +216,7 @@ export const PUBLIC_MODE_DESC: Record<PublicMode, string> = {
   open: '无需登录即可浏览与操作。匿名写操作将记录为内置 anonymous 账号。',
 }
 
-export const STATUS_META: Record<
-  Status,
-  { label: string; color: string }
-> = {
-  todo: { label: '待认领', color: 'default' },
-  in_progress: { label: '进行中', color: 'processing' },
-  done: { label: '已完成', color: 'success' },
-}
-
-export const STATUS_ORDER: Status[] = ['todo', 'in_progress', 'done']
+// 状态展示元信息/顺序/终态判定统一在 web/src/status.ts（单一注册表）。
 
 export const ACTION_LABELS: Record<string, string> = {
   created: '创建了任务',

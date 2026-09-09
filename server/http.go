@@ -255,7 +255,11 @@ func (a *app) writeErr(w http.ResponseWriter, code int, msg string) {
 func (a *app) writeNoContent(w http.ResponseWriter) { w.WriteHeader(204) }
 
 func validStatus(s Status) bool {
-	return s == StatusTodo || s == StatusInProgress || s == StatusDone
+	switch s {
+	case StatusTodo, StatusInProgress, StatusDone, StatusAbandoned:
+		return true
+	}
+	return false
 }
 
 // currentUserID 返回操作者 user_id（已登录或回落 anonymous；空 = 不应发生）。
@@ -281,6 +285,9 @@ func (a *app) routes() http.Handler {
 	// ===== 系统设置（GET 完全公开——登录/注册页也需要；写需 admin）=====
 	mux.HandleFunc("GET /api/settings", a.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings/public-mode", a.requireRole(RoleAdmin, a.handlePutPublicMode))
+
+	// ===== 公开使用指南（内嵌 guide.md，供 MCP 双通道拉取）=====
+	mux.HandleFunc("GET /api/guide", a.handleGuide)
 
 	// ===== 个人中心 =====
 	mux.HandleFunc("GET /api/me", a.requireUser(a.handleGetMe))

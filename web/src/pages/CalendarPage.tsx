@@ -3,7 +3,7 @@ import { Calendar, Empty, List, Space, Tag, Typography } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
-import { statusMeta } from '../lib'
+import { STATUS_META, isClosed } from '../status'
 
 const { Text } = Typography
 
@@ -39,7 +39,7 @@ export default function CalendarPage() {
                 width: 6,
                 height: 6,
                 borderRadius: 3,
-                background: statusMeta[t.status].accent,
+                background: STATUS_META[t.status].accent,
                 flexShrink: 0,
               }}
             />
@@ -88,8 +88,8 @@ export default function CalendarPage() {
             size="small"
             dataSource={dayTasks}
             renderItem={(t) => {
-              const over = t.status !== 'done' && dayjs(t.dueDate).isBefore(dayjs(), 'day')
-              const meta = statusMeta[t.status]
+              const over = !isClosed(t.status) && dayjs(t.dueDate).isBefore(dayjs(), 'day')
+              const meta = STATUS_META[t.status]
               return (
                 <List.Item style={{ cursor: 'pointer' }} onClick={() => openTask(t.id)}>
                   <div style={{ width: '100%' }}>

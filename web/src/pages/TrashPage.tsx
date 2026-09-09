@@ -16,7 +16,8 @@ import { api } from '../api'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
 import type { Status, Task } from '../types'
-import { statusMeta, fmtTime } from '../lib'
+import { STATUS_META, STATUS_ORDER, statusLabel } from '../status'
+import { fmtTime } from '../lib'
 
 const { Text } = Typography
 
@@ -90,9 +91,7 @@ export default function TrashPage() {
           style={{ width: 130 }}
           options={[
             { value: 'all', label: '全部状态' },
-            { value: 'todo', label: '待认领' },
-            { value: 'in_progress', label: '进行中' },
-            { value: 'done', label: '已完成' },
+            ...STATUS_ORDER.map((s) => ({ value: s, label: statusLabel(s) })),
           ]}
         />
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
@@ -146,8 +145,8 @@ export default function TrashPage() {
                 <List.Item.Meta
                   title={
                     <Space size={8} wrap>
-                      <Tag color={statusMeta[t.status].antdColor} style={{ marginInlineEnd: 0 }}>
-                        {statusMeta[t.status].label}
+                      <Tag color={STATUS_META[t.status].antdColor} style={{ marginInlineEnd: 0 }}>
+                        {STATUS_META[t.status].label}
                       </Tag>
                       <Typography.Text
                         strong

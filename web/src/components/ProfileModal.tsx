@@ -19,6 +19,7 @@ import { api } from '../api'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
 import { ROLE_LABELS, ACTION_LABELS } from '../types'
+import { STATUS_META } from '../status'
 import { avatarStyle, fmtTime } from '../lib'
 
 const { Text } = Typography
@@ -127,7 +128,7 @@ export default function ProfileModal() {
                       description={
                         <Space size={6}>
                           <Tag style={{ marginInlineEnd: 0 }}>
-                            {t.status === 'todo' ? '待认领' : t.status === 'in_progress' ? '进行中' : '已完成'}
+                            {STATUS_META[t.status].label}
                           </Tag>
                           {t.dueDate && (
                             <Text type="secondary" style={{ fontSize: 12 }}>

@@ -17,7 +17,7 @@ import {
 import { Avatar, Button, Dropdown, Input, Layout, Segmented, Space, Tag, Tooltip, Typography } from 'antd'
 import { isAdmin, useKanban, usePerms } from '../store'
 import { useUI, type Filter, type View } from '../ui'
-import { avatarStyle } from '../lib'
+import { avatarStyle, isOverdue } from '../lib'
 
 const { Header } = Layout
 
@@ -48,9 +48,7 @@ export default function TopBar() {
   const setQuery = useUI((s) => s.setQuery)
 
   const doneCount = tasks.filter((t) => t.status === 'done').length
-  const overdueCount = tasks.filter(
-    (t) => t.dueDate && t.status !== 'done' && new Date(t.dueDate).getTime() < Date.now(),
-  ).length
+  const overdueCount = tasks.filter((t) => isOverdue(t)).length
   const mineCount = user ? tasks.filter((t) => t.claims.some((c) => c.userId === user.id)).length : 0
 
   const displayName = user?.displayName ?? ''

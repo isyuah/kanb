@@ -137,3 +137,65 @@ func TestStatsEndpoint(t *testing.T) {
 		t.Fatalf("stats 结构异常: %+v", st)
 	}
 }
+
+// TestAbandonedStatusAPI 废弃状态 API 契约：PATCH 迁移到 abandoned 生效、
+// 统计单列计数、非法状态仍被拒。
+func TestAbandonedStatusAPI(t *testing.T) {
+	a := newTestApp(t)
+	tok := regHTTP(t, a, "boss")
+
+	rec := doReq(a, http.MethodPost, "/api/tasks", tok, `{"title":"先不做"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatal("create failed")
+	}
+	var tk Task
+	_ = json.Unmarshal(rec.Body.Bytes(), &tk)
+
+	// 非法状态拒绝
+	rec = doReq(a, http.MethodPatch, "/api/tasks/"+tk.ID, tok, `{"status":"bogus"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法状态 want 400 got %d", rec.Code)
+	}
+	// 迁到废弃
+	rec = doReq(a, http.MethodPatch, "/api/tasks/"+tk.ID, tok, `{"status":"abandoned"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch abandoned: %d %s", rec.Code, rec.Body.String())
+	}
+	var got Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusAbandoned {
+		t.Fatalf("status=%s, want abandoned", got.Status)
+	}
+
+	// 统计：废弃单列计数，活跃口径归零
+	rec = doReq(a, http.MethodGet, "/api/stats", tok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats: %d", rec.Code)
+	}
+	var st Stats
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Abandoned != 1 || st.TaskTotal != 0 {
+		t.Fatalf("stats: %+v", st)
+	}
+}
+
+// TestGuideEndpoint /api/guide 公开返回内嵌 AI 使用指南（供 MCP 双通道拉取）。
+func TestGuideEndpoint(t *testing.T) {
+	a := newTestApp(t)
+	// 公开：匿名（private 模式）也能读
+	rec := doReq(a, http.MethodGet, "/api/guide", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("guide: want 200 got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/markdown; charset=utf-8" {
+		t.Fatalf("guide content-type: %s", ct)
+	}
+	body := rec.Body.String()
+	if len(body) < 500 || !strings.Contains(body, "status") || !strings.Contains(body, "abandoned") {
+		t.Fatalf("guide 内容异常（长度 %d）", len(body))
+	}
+}

@@ -1,5 +1,5 @@
 import { Tooltip, Typography } from 'antd'
-import type { Claim, ProgressEntry, Status, User } from '../../types'
+import type { Claim, ProgressEntry, User } from '../../types'
 
 const { Text } = Typography
 
@@ -16,12 +16,8 @@ export function entryIsMine(p: ProgressEntry, me: User | null): boolean {
   return p.author === me.displayName
 }
 
-export function statusLabel(s: Status): string {
-  return s === 'todo' ? '待认领' : s === 'in_progress' ? '进行中' : '已完成'
-}
-export function statusColor(s: Status): string {
-  return s === 'todo' ? 'default' : s === 'in_progress' ? 'processing' : 'success'
-}
+// 状态文案/配色统一来自状态注册表（web/src/status.ts）
+export { isClosed, statusColor, statusLabel } from '../../status'
 
 export function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (

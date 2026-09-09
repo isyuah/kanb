@@ -21,7 +21,7 @@ dayjs.extend(utc)
 import { api } from '../api'
 import { useKanban } from '../store'
 import type { ReportEvent, ReportResult } from '../types'
-import { statusMeta } from '../lib'
+import { statusLabelRaw } from '../status'
 
 const { RangePicker } = DatePicker
 const { Text, Paragraph } = Typography
@@ -102,7 +102,7 @@ function describe(ev: ReportEvent): string {
   const base = ACTION_LABELS[ev.action] ?? ev.action
   if (!d) return base
   if (ev.action === 'updated') {
-    if (d.f && d.t) return `状态 ${statusMeta[d.f as 'todo' | 'in_progress' | 'done']?.label ?? d.f} → ${statusMeta[d.t as 'todo' | 'in_progress' | 'done']?.label ?? d.t}`
+    if (d.f && d.t) return `状态 ${statusLabelRaw(String(d.f))} → ${statusLabelRaw(String(d.t))}`
     if (d.old !== undefined && d.new !== undefined) return `${d.old} → ${d.new}`
     if (d.arc !== undefined) return d.arc ? '归档' : '取消归档'
     if (d.due !== undefined) return `截止 ${d.due || '（清除）'}`

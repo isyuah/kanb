@@ -19,16 +19,10 @@ import {
   YAxis,
 } from 'recharts'
 import { api } from '../api'
-import { statusMeta } from '../lib'
-import type { Stats, Status } from '../types'
+import { STATUS_META, statusLabel } from '../status'
+import type { Stats } from '../types'
 
 const { Text } = Typography
-
-const STATUS_COLORS: Record<Status, string> = {
-  todo: '#8c8c8c',
-  in_progress: '#4f6ef7',
-  done: '#2fbf71',
-}
 
 const PALETTE = [
   '#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96',
@@ -81,9 +75,9 @@ export default function StatsPage() {
   }
 
   const statusData = stats.byStatus.map((s) => ({
-    name: statusMeta[s.status as Status].label,
+    name: statusLabel(s.status),
     value: s.count,
-    color: STATUS_COLORS[s.status as Status],
+    color: STATUS_META[s.status].accent,
   }))
   const tagData = stats.byTag.map((t) => ({ name: t.tag, count: t.count }))
   const memberData = stats.byMember.map((m) => ({
@@ -169,7 +163,7 @@ export default function StatsPage() {
                 <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>
                   按认领者进度平均
                   <br />
-                  归档 {stats.archived} 个任务
+                  归档 {stats.archived} · 废弃 {stats.abandoned} 个任务
                 </Text>
               </div>
             </Space>
@@ -317,7 +311,7 @@ export default function StatsPage() {
       </Row>
 
       <Text type="secondary" style={{ fontSize: 12, textAlign: 'center', paddingBottom: 4 }}>
-        统计范围：未归档且未删除的任务 · 进入页面时实时拉取
+        统计范围：未归档、未删除且未废弃的任务 · 进入页面时实时拉取
       </Text>
     </div>
   )

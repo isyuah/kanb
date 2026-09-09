@@ -45,6 +45,7 @@
 - `GET /api/tasks?includeArchived=1` → `Task[]`，不含软删（回收站）项
 - `POST /api/tasks` body `TaskInput` → `201 Task`
 - `PATCH /api/tasks/{id}` body `TaskPatch` → `200 Task`
+- `status` 取值枚举：`todo` | `in_progress` | `done` | `abandoned`（废弃=刻意终止的终态；未知取值 400）
 - `DELETE /api/tasks/{id}` → `204`（软删：置 deleted_at，进回收站；member 仅限自己创建的，admin 可删任意——403 兜底）
 - Task JSON 兼容扩展：
   ```
@@ -86,14 +87,15 @@
 - `GET /api/stats` → Stats（只读，经 gateRead 放行）：
   ```
   {
-    taskTotal, todo, inProgress, done, overdue, archived, avgTaskPct,
+    taskTotal, todo, inProgress, done, abandoned, overdue, archived, avgTaskPct,
     byStatus:  [{ status, count }],
     byTag:     [{ tag, count }],
     byCreator: [{ userId?, userName?, count }],
     byMember:  [{ userId?, userName, taskCount, avgPct }]
   }
   ```
-  - 范围：未删除且未归档任务；逾期 = 未完成且 dueDate < 今日。
+  - 活跃口径（taskTotal/各计数/byStatus/byTag/byCreator/byMember/avgTaskPct）= 未删除、未归档且未废弃的任务；逾期 = 活跃未完成且 dueDate < 今日。
+  - `abandoned`：废弃任务数（未删未归档），单列计数、不进完成率；`byStatus` 不含 abandoned 行。
   - avgTaskPct：所有进度记录 percent 的平均（0-100）。
   - byMember：仅统计认领过任务的用户，avgPct 为该用户全部进度记录均值。
 
@@ -101,6 +103,12 @@
 
 - `GET /api/settings` → `{ publicMode, auth }`（公开，登录页据此决定显示登录门）
 - `PUT /api/settings/public-mode` body `{ publicMode }` → `200 { publicMode }`（admin）
+
+## AI 使用指南（公开）
+
+- `GET /api/guide` → `text/markdown`（内嵌 `server/guide.md`，无鉴权）。供 MCP 的
+  `get_usage_guide` 工具与 `kanb://guide` 资源拉取；内容为 AI 操作约定，
+  与 `docs/mcp.md` 同步维护。
 
 ## 错误
 

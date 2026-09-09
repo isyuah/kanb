@@ -5,6 +5,7 @@ import { api } from '../api'
 import { useKanban } from '../store'
 import { useUI } from '../ui'
 import type { Task } from '../types'
+import { STATUS_META } from '../status'
 import { fmtDate } from '../lib'
 
 export default function ArchiveModal() {
@@ -94,7 +95,7 @@ export default function ArchiveModal() {
                     </Tag>
                   ))}
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    完成于 {t.status === 'done' ? '已完成' : t.status === 'in_progress' ? '进行中' : '待认领'}
+                    状态 {STATUS_META[t.status].label}
                   </Typography.Text>
                 </Space>
               }

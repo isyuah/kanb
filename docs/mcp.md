@@ -1,6 +1,6 @@
 # Kanb MCP Server — 让 AI 直接安排任务
 
-MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Claude Desktop、Codex、Cursor、其他 MCP 客户端）。AI 可以列任务、建任务、认领、报进度、设依赖、发评论，操作以登录账号身份留痕（见下方「身份认证」；匿名模式下显示为「匿名」）。
+MCP（Model Context Protocol）server 把看板操作暴露给 AI 客户端（Claude Desktop、Codex、Cursor、其他 MCP 客户端）。AI 可以列任务、建任务、认领、报进度、设依赖、发评论。**所有写操作都以 MCP 进程配置的账号身份留痕**（见下方「身份认证」）：动态/认领/进度/评论归属该账号；无凭据时回落匿名（open 公开模式下显示为「匿名」）。工具调用不需要也不接受 author 参数。
 
 ## 快速开始
 
@@ -31,23 +31,26 @@ MCP 默认匿名运行（写操作需看板为 open 公开模式）。要让操�
 
 | 工具 | 说明 | 关键参数 |
 |---|---|---|
+| `get_usage_guide` | 获取看板使用指南（状态/字段约定、流程示例、错误含义）；不确定操作约定时先调用 | — |
 | `list_tasks` | 列出全部任务（含认领/进度/依赖） | `archived?` |
 | `get_task` | 单个任务完整详情 | `task_id` |
 | `list_activities` | 最近操作动态 | `limit?` |
-| `create_task` | 创建任务 | `author*` `title*` `content?` `status?` `due_date?` `tags?` |
-| `update_task` | 部分更新（标题/内容/状态/截止/归档） | `author*` `task_id*` |
-| `delete_task` | 永久删除任务 | `author*` `task_id*` |
-| `claim_task` | 认领任务（可多人） | `author*` `task_id*` |
-| `unclaim_task` | 取消认领 | `author*` `task_id*` |
-| `add_progress` | 添加进度记录 | `author*` `task_id*` `percent*`(0-100) `text?` |
-| `add_dependency` | 加前置依赖（防成环） | `author*` `task_id*` `dep_id*` |
-| `remove_dependency` | 移除依赖 | `author*` `task_id*` `dep_id*` |
+| `create_task` | 创建任务 | `title*` `content?` `status?` `due_date?` `tags?` |
+| `update_task` | 部分更新（标题/内容/状态/截止/归档） | `task_id*` |
+| `delete_task` | 永久删除任务 | `task_id*` |
+| `claim_task` | 认领任务（可多人） | `task_id*` |
+| `unclaim_task` | 取消认领 | `task_id*` |
+| `add_progress` | 添加进度记录 | `task_id*` `percent*`(0-100) `text?` |
+| `add_dependency` | 加前置依赖（防成环） | `task_id*` `dep_id*` |
+| `remove_dependency` | 移除依赖 | `task_id*` `dep_id*` |
 | `list_comments` | 查看某任务评论（含回复） | `task_id*` |
-| `add_comment` | 发表评论/回复 | `author*` `task_id*` `content*` `parent_id?` |
-| `edit_comment` | 编辑自己的评论 | `author*` `comment_id*` `content*` |
-| `delete_comment` | 删除评论（删顶层连带回复） | `author*` `comment_id*` |
+| `add_comment` | 发表评论/回复 | `task_id*` `content*` `parent_id?` |
+| `edit_comment` | 编辑自己的评论 | `comment_id*` `content*` |
+| `delete_comment` | 删除评论（删顶层连带回复） | `comment_id*` |
 
-`*` = 必填。`author` 是操作者名字——**它会作为该操作人显示在看板动态里**，AI 替谁干活就填谁（或填一个统一的 `AI助手` 名字，团队成员可辨识）。
+`*` = 必填。`status` 取值：`todo` / `in_progress` / `done` / `abandoned`。写操作显示的操作人 = 配置的看板账号（KANB_USERNAME 或 token 对应用户，见「身份认证」）；想区分多个 AI 的操作，请为每个 AI 配置独立账号。
+
+**使用指南双通道（同源）**：指南内嵌在服务端（`server/guide.md`，经 `GET /api/guide` 提供），AI 可通过 `get_usage_guide` 工具**主动拉取**，或以 MCP 资源 `kanb://guide` **附加进对话**（支持资源浏览/附加的客户端，如 Claude Desktop）。二者内容一致——若指南全文已出现在当前对话（如已附加该资源），无需再调用工具；工具描述内含此引导。指南与本文档约定同步维护，改任一处需同步另一处。
 
 ## 客户端配置
 
@@ -93,12 +96,12 @@ Settings → MCP → Add new MCP server：
 
 ## 让 AI 安排任务的建议话术
 
-> 帮我把「设计评审」拆成 3 个任务并创建，加上依赖关系：先做 A 再做 B 最后 C；然后认领 A 并报 20% 进度。操作人写「AI助手」。
+> 帮我把「设计评审」拆成 3 个任务并创建，加上依赖关系：先做 A 再做 B 最后 C；然后认领 A 并报 20% 进度。
 
-AI 会依次调用 `list_tasks`（查重）→ `create_task` → `add_dependency` → `claim_task` → `add_progress`。所有变更实时出现在看板 UI（SSE 推送）。
+AI 会依次调用 `list_tasks`（查重）→ `create_task` → `add_dependency` → `claim_task` → `add_progress`。所有变更实时出现在看板 UI（SSE 推送），操作人显示为 MCP 配置的看板账号。
 
 ## 开发备注
 
 - transport：stdio（标准 MCP）；协议版本 2024-11-05。
-- 实现：Go + `github.com/mark3labs/mcp-go`，每个工具转发到 kanb REST API（见 `docs/api.md` 数据格式）。
-- 中文 author 经 URL 编码传输，与看板前端行为一致。
+- 实现：Go + `github.com/mark3labs/mcp-go`，每个工具转发到 kanb REST API（见 `docs/api-contract.md` 数据格式）。
+- 三平台二进制由 GitHub Actions 在打 `v*` 标签时构建并发布（`.github/workflows/release.yml`）。

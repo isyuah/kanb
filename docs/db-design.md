@@ -87,7 +87,7 @@ CREATE TABLE tasks (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL,
   content    TEXT NOT NULL DEFAULT '',
-  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done')),
+  status     TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','done','abandoned')),
   position   REAL NOT NULL DEFAULT 0,
   due_date   TEXT,                             -- YYYY-MM-DD
   archived   INTEGER NOT NULL DEFAULT 0,
@@ -205,7 +205,23 @@ CREATE TABLE settings (
 | 认领唯一 | UNIQUE(task_id,user_id) | 约束入库，不靠应用层检查 |
 | 外键 | 连接层 PRAGMA foreign_keys=ON | 参照完整性真实落地 |
 | 任务删除 | deleted_at 软删 + 回收站恢复 | 防误删，保留审计链 |
+| 废弃状态 | abandoned 内置终态 + CHECK 约束 | 刻意终止（不做）单独留痕：不进活跃统计、不阻塞依赖、不逾期 |
 | 用户删除 | disabled 软停用 | 历史 claims/progress/activities 不断链 |
 | 系统配置 | settings 键值表 | 配置数据化，免改代码 |
 | 依赖自环 | 应用 BFS 防环 + CHECK(task_id<>dep_id) | 双层防护 |
 | 审计留痕 | activities.task_title 快照 | 任务删改名后历史仍可读（见 §4.4） |
+
+## 7. 数据迁移（tasks.status CHECK 升级）
+
+v1 库 `CHECK (status IN ('todo','in_progress','done'))` 不允许废弃状态。升级策略分后端：
+
+- **SQLite**：`openStore` 启动时自动检测并重建（`migrateTasksStatusCheck`，store.go）——查 `sqlite_master` 中 tasks 定义，缺 `'abandoned'` 即按「外键关闭 → 建新表 → 搬数据 → 换名 → 重建索引」单事务升级，幂等、数据保留。无需手工操作。
+- **PostgreSQL**：部署库需手动执行（无自动迁移，CREATE TABLE IF NOT EXISTS 不改旧表）：
+
+```sql
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+  CHECK (status IN ('todo','in_progress','done','abandoned'));
+```
+
+- 遗留旧格式库（无 comments/deleted_at 等新表列，如历史 `kanb.db`）不属于本迁移范围：先用 `server/migrate-legacy` 升级到当前格式，再由上面路径升级。

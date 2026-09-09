@@ -1,6 +1,7 @@
 // Kanb MCP server: exposes kanban operations to MCP clients (Claude Desktop,
-// Codex, Cursor, etc). Each tool maps 1:1 to the kanb REST API and requires
-// an `author` argument (name recorded as the operator).
+// Codex, Cursor, etc). Each tool maps 1:1 to the kanb REST API. 写操作身份 =
+// 进程持有的会话账号（KANB_USERNAME/KANB_TOKEN/-token，见 docs/mcp.md「身份认证」），
+// 工具调用本身无需 author 参数。
 package main
 
 import (
@@ -22,6 +23,9 @@ import (
 )
 
 var (
+	// version 默认开发版；GitHub Release 构建时经 -ldflags "-X main.version=<tag>" 注入。
+	version = "0.1.0"
+
 	kanbBase = "http://localhost:8400/api"
 	httpCli  = &http.Client{Timeout: 30 * time.Second}
 
@@ -62,9 +66,9 @@ func main() {
 		log.Printf("auth: 无凭据，以匿名运行（写操作需看板 open 模式）")
 	}
 
-	s := server.NewMCPServer("kanb", "0.1.0",
+	s := server.NewMCPServer("kanb", version,
 		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(false, false),
+		server.WithResourceCapabilities(true, false), // resources: 支持 list/read（指南文档）
 		server.WithLogging(),
 	)
 
@@ -113,8 +117,8 @@ func login(username, password string) error {
 
 // kanbReq 发请求：带当前 Bearer token；401 时若持有 env 账号密码则重登并重放一次。
 // 重放仅一次，避免登录失败/凭据错误时死循环。auth/login 自身不参与续期。
-func kanbReq(ctx context.Context, method, path string, author string, body any) (int, []byte, error) {
-	code, data, err := doReq(ctx, method, path, author, body)
+func kanbReq(ctx context.Context, method, path string, body any) (int, []byte, error) {
+	code, data, err := doReq(ctx, method, path, body)
 	if err != nil {
 		return code, data, err
 	}
@@ -123,12 +127,12 @@ func kanbReq(ctx context.Context, method, path string, author string, body any) 
 			return code, data, fmt.Errorf("HTTP 401 且自动重登失败: %v", lerr)
 		}
 		log.Printf("auth: 会话失效，已用账号密码重新登录并重放请求")
-		return doReq(ctx, method, path, author, body)
+		return doReq(ctx, method, path, body)
 	}
 	return code, data, nil
 }
 
-func doReq(ctx context.Context, method, path string, author string, body any) (int, []byte, error) {
+func doReq(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -144,9 +148,6 @@ func doReq(ctx context.Context, method, path string, author string, body any) (i
 	req.Header.Set("Content-Type", "application/json")
 	if authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+authToken)
-	}
-	if author != "" {
-		req.Header.Set("X-Author", url.QueryEscape(author)) // 中文名需编码
 	}
 	resp, err := httpCli.Do(req)
 	if err != nil {
@@ -168,35 +169,72 @@ func toolResult(err error, data []byte) *mcp.CallToolResult {
 	return mcp.NewToolResultText(string(data))
 }
 
-func withAuthor(author string, next func(author string) (*mcp.CallToolResult, error)) (result *mcp.CallToolResult, err error) {
-	a := strings.TrimSpace(author)
-	if a == "" {
-		return mcp.NewToolResultError("缺少 author 参数：请提供操作者名字（将记录为操作人）"), nil
-	}
-	return next(a)
-}
-
 // ---- tool definitions ----
 
 func registerTools(s *server.MCPServer) {
-	// helper: text tool requiring author
-	authorTool := func(name, desc string, args map[string]mcp.ToolOption, handler func(author string, arguments map[string]any) (*mcp.CallToolResult, error)) {
-		opts := map[string]mcp.ToolOption{
-			"author": mcp.WithDescription("操作者名字（必填，将被记录为该操作的执行人）"),
+	// guideURI 看板使用指南：tools 与 resources 双通道同源（GET /api/guide）。
+	const guideURI = "kanb://guide"
+	readGuide := func(ctx context.Context) ([]byte, error) {
+		code, data, err := kanbReq(ctx, "GET", "/guide", nil)
+		if err != nil {
+			return nil, err
 		}
-		for k, v := range args {
-			opts[k] = v
+		if code != 200 {
+			return nil, fmt.Errorf("HTTP %d: %s", code, data)
 		}
-		t := mcp.NewTool(name, append([]mcp.ToolOption{mcp.WithDescription(desc)}, collectOptions(opts)...)...)
+		return data, nil
+	}
+
+	// 资源通道：供支持资源浏览/附加的客户端（如 Claude Desktop）展示；内容需用户附加才进上下文。
+	s.AddResource(
+		mcp.Resource{
+			URI:         guideURI,
+			Name:        "kanb-guide",
+			Title:       "Kanb 使用指南",
+			Description: "看板任务/状态/依赖/评论的操作约定与端到端示例。模型不确定操作约定时可让用户附加此资源，或直接调用 get_usage_guide 工具。",
+			MIMEType:    "text/markdown",
+		},
+		func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			data, err := readGuide(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("读取指南失败: %v", err)
+			}
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{URI: guideURI, MIMEType: "text/markdown", Text: string(data)},
+			}, nil
+		},
+	)
+
+	// 工具通道：模型可自主按需调用（推荐入口；资源需用户附加，模型看不到时用本工具）。
+	s.AddTool(
+		mcp.NewTool("get_usage_guide",
+			mcp.WithDescription("获取 kanb 看板使用指南（状态取值、任务/依赖/评论/进度约定、常用流程与错误含义）。"+
+				"不确定操作约定、字段格式或权限边界时先调用本工具；若指南全文已出现在当前对话中"+
+				"（例如用户已附加 kanb://guide 资源），则无需重复调用。"),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			data, err := readGuide(ctx)
+			if err != nil {
+				return toolResult(err, nil), nil
+			}
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	// helper: write tool（身份=进程会话账号，调用无需 author 参数）
+	writeTool := func(name, desc string, args map[string]mcp.ToolOption, handler func(arguments map[string]any) (*mcp.CallToolResult, error)) {
+		opts := make([]mcp.ToolOption, 0, len(args)+1)
+		opts = append(opts, mcp.WithDescription(desc))
+		for _, v := range args {
+			opts = append(opts, v)
+		}
+		t := mcp.NewTool(name, opts...)
 		s.AddTool(t, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, ok := req.Params.Arguments.(map[string]any)
 			if !ok {
 				return mcp.NewToolResultError("参数格式错误"), nil
 			}
-			author, _ := args["author"].(string)
-			return withAuthor(author, func(a string) (*mcp.CallToolResult, error) {
-				return handler(a, args)
-			})
+			return handler(args)
 		})
 	}
 
@@ -212,7 +250,7 @@ func registerTools(s *server.MCPServer) {
 			if archived, _ := argsOf(req, "archived").(bool); archived {
 				q = "?includeArchived=true"
 			}
-			code, data, err := kanbReq(ctx, "GET", "/tasks"+q, "", nil)
+			code, data, err := kanbReq(ctx, "GET", "/tasks"+q, nil)
 			if err != nil {
 				return toolResult(err, nil), nil
 			}
@@ -233,7 +271,7 @@ func registerTools(s *server.MCPServer) {
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
 			}
-			code, data, err := kanbReq(ctx, "GET", "/tasks/"+url.PathEscape(id), "", nil)
+			code, data, err := kanbReq(ctx, "GET", "/tasks/"+url.PathEscape(id), nil)
 			if err != nil {
 				return toolResult(err, nil), nil
 			}
@@ -254,7 +292,7 @@ func registerTools(s *server.MCPServer) {
 			if lim <= 0 {
 				lim = 50
 			}
-			code, data, err := kanbReq(ctx, "GET", fmt.Sprintf("/activities?limit=%d", int(lim)), "", nil)
+			code, data, err := kanbReq(ctx, "GET", fmt.Sprintf("/activities?limit=%d", int(lim)), nil)
 			if err != nil {
 				return toolResult(err, nil), nil
 			}
@@ -267,15 +305,15 @@ func registerTools(s *server.MCPServer) {
 
 	// ---- write tools ----
 
-	authorTool("create_task", "创建任务。建议先列出现有任务避免重复。",
+	writeTool("create_task", "创建任务。建议先列出现有任务避免重复。",
 		map[string]mcp.ToolOption{
 			"title":    mcp.WithString("title", mcp.Required(), mcp.Description("任务标题（必填）")),
 			"content":  mcp.WithString("content", mcp.Description("任务详细内容/背景")),
-			"status":   mcp.WithString("status", mcp.Description("todo | in_progress | done，默认 todo")),
+			"status":   mcp.WithString("status", mcp.Description("todo | in_progress | done | abandoned，默认 todo")),
 			"due_date": mcp.WithString("due_date", mcp.Description("截止日期 YYYY-MM-DD，可省略")),
 			"tags":     mcp.WithArray("tags", mcp.Description("标签数组，如 [\"前端\",\"P1\"]")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			title, _ := args["title"].(string)
 			if strings.TrimSpace(title) == "" {
 				return mcp.NewToolResultError("title 不能为空"), nil
@@ -295,22 +333,22 @@ func registerTools(s *server.MCPServer) {
 				}
 				body["tags"] = arr
 			}
-			code, data, err := kanbReq(context.Background(), "POST", "/tasks", author, body)
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks", body)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("update_task", "部分更新任务（标题/内容/状态/截止日/标签/归档）。只传要改的字段。",
+	writeTool("update_task", "部分更新任务（标题/内容/状态/截止日/标签/归档）。只传要改的字段。",
 		map[string]mcp.ToolOption{
 			"task_id":  mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 			"title":    mcp.WithString("title", mcp.Description("新标题")),
 			"content":  mcp.WithString("content", mcp.Description("新内容")),
-			"status":   mcp.WithString("status", mcp.Description("todo | in_progress | done")),
+			"status":   mcp.WithString("status", mcp.Description("todo | in_progress | done | abandoned")),
 			"due_date": mcp.WithString("due_date", mcp.Description("YYYY-MM-DD；传空字符串清除")),
 			"archived": mcp.WithBoolean("archived", mcp.Description("归档 true / 恢复 false")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
@@ -338,105 +376,105 @@ func registerTools(s *server.MCPServer) {
 			if len(body) == 0 {
 				return mcp.NewToolResultError("没有可更新的字段"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "PATCH", "/tasks/"+url.PathEscape(id), author, body)
+			code, data, err := kanbReq(context.Background(), "PATCH", "/tasks/"+url.PathEscape(id), body)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("delete_task", "永久删除任务（连同认领/进度/依赖记录）。",
+	writeTool("delete_task", "永久删除任务（连同认领/进度/依赖记录）。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id), author, nil)
+			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id), nil)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("claim_task", "认领任务（作者成为认领人之一；可多人认领同一任务）。",
+	writeTool("claim_task", "认领任务（操作账号成为认领人之一；可多人认领同一任务）。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/claim", author, nil)
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/claim", nil)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("unclaim_task", "取消认领任务（作者本人）。",
+	writeTool("unclaim_task", "取消认领任务（操作账号本人的认领）。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id)+"/claim", author, nil)
+			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id)+"/claim", nil)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("add_progress", "为任务添加一条进度记录（可多人各自记录）。",
+	writeTool("add_progress", "为任务添加一条进度记录（可多人各自记录）。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 			"percent": mcp.WithNumber("percent", mcp.Required(), mcp.Description("完成百分比 0-100")),
 			"text":    mcp.WithString("text", mcp.Description("进度说明")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			pct, _ := args["percent"].(float64)
 			if id == "" || pct < 0 || pct > 100 {
 				return mcp.NewToolResultError("task_id 必填且 percent 需在 0-100"), nil
 			}
 			body := map[string]any{"percent": int(pct), "text": strOr(args["text"], "")}
-			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/progress", author, body)
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/progress", body)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("add_dependency", "为任务添加前置依赖：本任务需等待 dep_id 指向的任务完成。服务端防成环。",
+	writeTool("add_dependency", "为任务添加前置依赖：本任务需等待 dep_id 指向的任务完成。服务端防成环。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("依赖方任务 ID")),
 			"dep_id":  mcp.WithString("dep_id", mcp.Required(), mcp.Description("被依赖任务 ID（先完成它）")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			dep, _ := args["dep_id"].(string)
 			if id == "" || dep == "" {
 				return mcp.NewToolResultError("task_id 与 dep_id 均必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/deps", author, map[string]any{"depId": dep})
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/deps", map[string]any{"depId": dep})
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("remove_dependency", "移除任务的前置依赖。",
+	writeTool("remove_dependency", "移除任务的前置依赖。",
 		map[string]mcp.ToolOption{
 			"task_id": mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 			"dep_id":  mcp.WithString("dep_id", mcp.Required(), mcp.Description("被依赖任务 ID")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			dep, _ := args["dep_id"].(string)
 			if id == "" || dep == "" {
 				return mcp.NewToolResultError("task_id 与 dep_id 均必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id)+"/deps/"+url.PathEscape(dep), author, nil)
+			code, data, err := kanbReq(context.Background(), "DELETE", "/tasks/"+url.PathEscape(id)+"/deps/"+url.PathEscape(dep), nil)
 			_ = code
 			return toolResult(err, data), nil
 		},
@@ -454,7 +492,7 @@ func registerTools(s *server.MCPServer) {
 			if id == "" {
 				return mcp.NewToolResultError("task_id 必填"), nil
 			}
-			code, data, err := kanbReq(ctx, "GET", "/tasks/"+url.PathEscape(id)+"/comments", "", nil)
+			code, data, err := kanbReq(ctx, "GET", "/tasks/"+url.PathEscape(id)+"/comments", nil)
 			if err != nil {
 				return toolResult(err, nil), nil
 			}
@@ -465,13 +503,13 @@ func registerTools(s *server.MCPServer) {
 		},
 	)
 
-	authorTool("add_comment", "为任务发表评论（或回复某条评论）。",
+	writeTool("add_comment", "为任务发表评论（或回复某条评论）。",
 		map[string]mcp.ToolOption{
 			"task_id":   mcp.WithString("task_id", mcp.Required(), mcp.Description("任务 ID")),
 			"content":   mcp.WithString("content", mcp.Required(), mcp.Description("评论内容（1-2000 字符，支持 Markdown）")),
 			"parent_id": mcp.WithString("parent_id", mcp.Description("回复的评论 ID；不填为顶层评论")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			id, _ := args["task_id"].(string)
 			content, _ := args["content"].(string)
 			parent, _ := args["parent_id"].(string)
@@ -483,18 +521,18 @@ func registerTools(s *server.MCPServer) {
 				return mcp.NewToolResultError("content 需在 1-2000 字符内"), nil
 			}
 			body := map[string]any{"content": content, "parentId": nilIfEmpty(parent)}
-			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/comments", author, body)
+			code, data, err := kanbReq(context.Background(), "POST", "/tasks/"+url.PathEscape(id)+"/comments", body)
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("edit_comment", "编辑自己的评论内容。",
+	writeTool("edit_comment", "编辑自己的评论内容（仅限操作账号本人的评论）。",
 		map[string]mcp.ToolOption{
 			"comment_id": mcp.WithString("comment_id", mcp.Required(), mcp.Description("评论 ID")),
 			"content":    mcp.WithString("content", mcp.Required(), mcp.Description("新的评论内容（1-2000 字符）")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			cid, _ := args["comment_id"].(string)
 			content, _ := args["content"].(string)
 			content = strings.TrimSpace(content)
@@ -504,22 +542,22 @@ func registerTools(s *server.MCPServer) {
 			if len(content) > 2000 {
 				return mcp.NewToolResultError("content 需在 1-2000 字符内"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "PATCH", "/comments/"+url.PathEscape(cid), author, map[string]any{"content": content})
+			code, data, err := kanbReq(context.Background(), "PATCH", "/comments/"+url.PathEscape(cid), map[string]any{"content": content})
 			_ = code
 			return toolResult(err, data), nil
 		},
 	)
 
-	authorTool("delete_comment", "删除自己的评论（作者本人或管理员）。删除顶层评论会连带删除其全部回复。",
+	writeTool("delete_comment", "删除评论（限操作账号本人或管理员）。删除顶层评论会连带删除其全部回复。",
 		map[string]mcp.ToolOption{
 			"comment_id": mcp.WithString("comment_id", mcp.Required(), mcp.Description("评论 ID")),
 		},
-		func(author string, args map[string]any) (*mcp.CallToolResult, error) {
+		func(args map[string]any) (*mcp.CallToolResult, error) {
 			cid, _ := args["comment_id"].(string)
 			if cid == "" {
 				return mcp.NewToolResultError("comment_id 必填"), nil
 			}
-			code, data, err := kanbReq(context.Background(), "DELETE", "/comments/"+url.PathEscape(cid), author, nil)
+			code, data, err := kanbReq(context.Background(), "DELETE", "/comments/"+url.PathEscape(cid), nil)
 			_ = code
 			return toolResult(err, data), nil
 		},
@@ -532,14 +570,6 @@ func argsOf(req mcp.CallToolRequest, key string) any {
 		return nil
 	}
 	return args[key]
-}
-
-func collectOptions(m map[string]mcp.ToolOption) []mcp.ToolOption {
-	out := make([]mcp.ToolOption, 0, len(m))
-	for _, v := range m {
-		out = append(out, v)
-	}
-	return out
 }
 
 func strOr(v any, def string) string {

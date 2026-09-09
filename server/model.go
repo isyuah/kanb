@@ -8,7 +8,14 @@ const (
 	StatusTodo       Status = "todo"
 	StatusInProgress Status = "in_progress"
 	StatusDone       Status = "done"
+	// StatusAbandoned 废弃：刻意终止、不做（终态，与 done 同属 closed）。
+	StatusAbandoned Status = "abandoned"
 )
+
+// Closed 是否为终态（完成/废弃）。终态任务不计逾期、不阻塞其下游依赖。
+func (s Status) Closed() bool {
+	return s == StatusDone || s == StatusAbandoned
+}
 
 // RBAC 三角色（DB 中存 roles 字典 + user_roles 多对多关联，代码层以 code 引用）
 const (
@@ -135,7 +142,7 @@ type TaskInput struct {
 
 // TaskStat 状态计数等单值结构。
 type TaskStat struct {
-	Status string `json:"status"` // todo | in_progress | done
+	Status string `json:"status"` // todo | in_progress | done | abandoned
 	Count  int    `json:"count"`
 }
 
@@ -160,15 +167,18 @@ type MemberWorkload struct {
 }
 
 // Stats 看板统计总览。
+// 口径：TaskTotal/状态分布/逾期/进度/标签/创建人/成员工作量均只统计「活跃任务」
+// （未删、未归档、未废弃）；废弃任务单独以 Abandoned 计数，不进完成率。
 type Stats struct {
-	TaskTotal    int              `json:"taskTotal"`    // 未删未归档任务总数
+	TaskTotal    int              `json:"taskTotal"`    // 活跃任务总数
 	Todo         int              `json:"todo"`
 	InProgress   int              `json:"inProgress"`
 	Done         int              `json:"done"`
-	Overdue      int              `json:"overdue"`      // 已逾期且未完成
+	Abandoned    int              `json:"abandoned"`    // 废弃任务数（未删未归档，单列计数）
+	Overdue      int              `json:"overdue"`      // 已逾期且未完成（不含终态）
 	Archived     int              `json:"archived"`     // 归档任务数
-	AvgTaskPct   float64          `json:"avgTaskPct"`   // 全板任务平均进度（0-100，按认领者进度平均）
-	ByStatus     []TaskStat       `json:"byStatus"`
+	AvgTaskPct   float64          `json:"avgTaskPct"`   // 活跃任务平均进度（0-100，按认领者进度平均）
+	ByStatus     []TaskStat       `json:"byStatus"`     // 活跃任务状态分布（不含 abandoned）
 	ByTag        []TagStat        `json:"byTag"`
 	ByCreator    []CreatorStat    `json:"byCreator"`
 	ByMember     []MemberWorkload `json:"byMember"` // 仅认领过任务的成员

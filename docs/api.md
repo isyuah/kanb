@@ -1,8 +1,12 @@
 # Kanb API 数据格式文档
 
+> **⚠️ 本文档已归档（描述历史版本）**
+> 内容对应早期「免登录 + `X-Author` 人名」模型；当前版本已改为**账号/RBAC + Bearer token**，`X-Author` 不再被服务端读取（CORS 白名单中的保留仅为兼容旧客户端）。
+> 现行契约以 [`api-contract.md`](api-contract.md) 为准（代码见 `server/model.go` 与 `docs/db-design.md`）；本文仅留作旧版参考，示例中的 `X-Author` 用法均已失效。
+
 供 AI 客户端 / 外部脚本通过 HTTP 操作看板。基地址 `http://<host>:8400/api`。
 
-## 通用约定
+## 通用约定（旧版，已失效）
 
 - **认证**：无登录。每个写请求带请求头 `X-Author: <操作者名字>`，服务端据此记录「谁做的」。名字含中文/非 ASCII 时必须 **URL 编码**（浏览器 fetch 无法直接放非 Latin-1 字符到 header）：
   ```
@@ -12,7 +16,7 @@
 - **Content-Type**: `application/json`。
 - **ID**：服务端生成（Unix 纳秒时间戳字符串）。
 - **时间**：`createdAt` / `updatedAt` 为 ISO8601 UTC（`2026-09-02T13:03:28Z`）。`dueDate` 为 `YYYY-MM-DD` 或 `null`。
-- **状态枚举** `status`：`todo`（待认领）| `in_progress`（进行中）| `done`（已完成）。
+- **状态枚举** `status`：`todo`（待认领）| `in_progress`（进行中）| `done`（已完成）| `abandoned`（已废弃）。
 - **错误**：非 2xx 返回 `{"error": "中文可读信息"}`。
 - **SSE 实时推送**：`GET /api/events`（EventSource）。任何变更后推送 `data: {"type":"changed","taskId":"<id>"}`，另有心跳注释行。客户端应在其后重新拉取数据。
 
@@ -100,6 +104,7 @@
 请求只放要改的字段：
 ```json
 { "status": "in_progress" }
+{ "status": "abandoned" }                     // 废弃（终态）：不再做，保留记录与审计
 { "title": "新标题", "dueDate": null }        // dueDate 传 null 清除截止日
 { "archived": true }                          // 归档；false 恢复
 { "tags": ["前端", "P1"], "content": "…" }

@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useEffect, useRef, useState } from 'react'
 import { Avatar, Badge, Progress, Tag, Tooltip, Typography } from 'antd'
 import { ClockCircleOutlined, FlagOutlined, LinkOutlined } from '@ant-design/icons'
-import type { Task } from '../types'
-import { STATUS_ORDER, type Status } from '../types'
+import type { Task, Status } from '../types'
+import { STATUS_META, STATUS_ORDER } from '../status'
 import { useKanban, usePerms } from '../store'
 import { useUI } from '../ui'
-import { avatarStyle, daysLeft, isMine, isOverdue, taskPercent } from '../lib'
+import { avatarStyle, daysLeft, isBlocked, isMine, isOverdue, taskPercent } from '../lib'
 import {
   DndContext,
   DragOverlay,
@@ -21,13 +21,17 @@ import {
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-const COLUMN_META: Record<Status, { title: string; accent: string; bg: string }> = {
-  todo: { title: '待认领', accent: '#8c8c8c', bg: 'rgba(140,140,140,0.08)' },
-  in_progress: { title: '进行中', accent: '#4f6ef7', bg: 'rgba(79,110,247,0.08)' },
-  done: { title: '已完成', accent: '#2fbf71', bg: 'rgba(47,191,113,0.08)' },
+/** 空列桶：按 STATUS_ORDER 生成，列增删只改注册表 */
+function emptyTaskBuckets(): Record<Status, Task[]> {
+  const m = {} as Record<Status, Task[]>
+  for (const s of STATUS_ORDER) m[s] = []
+  return m
 }
-
-const ALL_STATUS: Status[] = ['todo', 'in_progress', 'done']
+function emptyIdBuckets(): Record<Status, string[]> {
+  const m = {} as Record<Status, string[]>
+  for (const s of STATUS_ORDER) m[s] = []
+  return m
+}
 
 export default function KanbanBoard() {
   const tasks = useKanban((s) => s.tasks)
@@ -53,9 +57,7 @@ export default function KanbanBoard() {
     if (filter === 'mine') {
       list = list.filter((t) => isMine(t, me))
     } else if (filter === 'overdue') {
-      list = list.filter(
-        (t) => t.dueDate && t.status !== 'done' && new Date(t.dueDate).getTime() < Date.now(),
-      )
+      list = list.filter((t) => isOverdue(t))
     }
     const q = query.trim().toLowerCase()
     if (!q) return list
@@ -75,7 +77,7 @@ export default function KanbanBoard() {
 
   // 从服务端任务派生列序列（仅当无进行中拖拽时同步）
   const derived = useMemo(() => {
-    const m: Record<Status, Task[]> = { todo: [], in_progress: [], done: [] }
+    const m = emptyTaskBuckets()
     for (const t of filtered) m[t.status].push(t)
     return m
   }, [filtered])
@@ -83,14 +85,14 @@ export default function KanbanBoard() {
   // 派生序跟随服务端；仅拖拽期间冻结本地乐观序
   useEffect(() => {
     if (activeId) return // 拖拽中不覆盖乐观移动
-    const next: Record<Status, string[]> = { todo: [], in_progress: [], done: [] }
-    for (const st of ALL_STATUS) next[st] = derived[st].map((t) => t.id)
+    const next = emptyIdBuckets()
+    for (const st of STATUS_ORDER) next[st] = derived[st].map((t) => t.id)
     setColItems(next)
   }, [derived, activeId])
 
   const statusOf = (id: string): Status | null => {
     if (!colItems) return null
-    for (const st of ALL_STATUS) if (colItems[st].includes(id)) return st
+    for (const st of STATUS_ORDER) if (colItems[st].includes(id)) return st
     return null
   }
 
@@ -206,8 +208,8 @@ export default function KanbanBoard() {
   // 稳定引用：仅当 colItems(拖拽乐观序) 或 derived(服务端序) 变化时重建，
   // 避免每次渲染新数组导致 SortableContext 内部死循环(React #185)
   const visibleIds = useMemo(() => {
-    const m: Record<Status, string[]> = { todo: [], in_progress: [], done: [] }
-    for (const st of ALL_STATUS) {
+    const m = emptyIdBuckets()
+    for (const st of STATUS_ORDER) {
       m[st] = colItems?.[st] ?? derived[st].map((t) => t.id)
     }
     return m
@@ -257,7 +259,7 @@ function BoardColumn({
   isOver: boolean
   writable: boolean
 }) {
-  const meta = COLUMN_META[status]
+  const meta = STATUS_META[status]
   const { setNodeRef, isOver: dropOver } = useDroppable({ id: `col-${status}` })
   const highlighted = isOver || dropOver
   const tasks = taskIds.map((id) => taskById(id)).filter((t): t is Task => !!t)
@@ -282,14 +284,14 @@ function BoardColumn({
             height: 8,
             borderRadius: 4,
             background: meta.accent,
-            boxShadow: `0 0 0 3px ${meta.bg}`,
+            boxShadow: `0 0 0 3px ${meta.columnBg}`,
           }}
         />
-        <Typography.Text strong>{meta.title}</Typography.Text>
+        <Typography.Text strong>{meta.label}</Typography.Text>
         <Badge
           count={tasks.length}
           showZero
-          style={{ backgroundColor: meta.bg, color: meta.accent, fontWeight: 700, boxShadow: 'none' }}
+          style={{ backgroundColor: meta.columnBg, color: meta.accent, fontWeight: 700, boxShadow: 'none' }}
         />
       </div>
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
@@ -399,7 +401,7 @@ function TaskCard({ task, onOpen, writable }: { task: Task; onOpen: (id: string)
 function TaskCardInner({ task, overlay }: { task: Task; overlay?: boolean }) {
   const pct = taskPercent(task)
   const overdue = isOverdue(task)
-  const blocked = task.deps.some((d) => d.status !== 'done')
+  const blocked = isBlocked(task)
   const me = useKanban((s) => s.user)
   const claimedByMe = isMine(task, me)
   return (

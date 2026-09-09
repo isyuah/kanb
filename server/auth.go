@@ -228,23 +228,58 @@ func (s *Store) UserCount() (int, error) {
 	return n, err
 }
 
-// Register 注册新用户。系统尚无任何真实用户时，首位注册者自动获得 admin 角色（部署引导）。
-// 返回 (user, 是否为首位 admin)。
-func (s *Store) Register(username, password, displayName string) (*User, bool, error) {
+// CreateUser 管理员代建账号：用户名/密码/展示名 + 指定角色（admin/member/viewer）。
+// 与自助注册共用同一建号校验逻辑；不做「首位 admin」引导（能代建说明管理员已存在）。
+// 同名用户名返回可读错误（该用户名已被占用）。
+func (s *Store) CreateUser(username, password, displayName, role string) (*User, error) {
 	username = strings.TrimSpace(username)
+	if !validRoles[role] {
+		return nil, errors.New("无效的角色")
+	}
 	if username == "" || password == "" {
-		return nil, false, errors.New("用户名与密码不能为空")
+		return nil, errors.New("用户名与密码不能为空")
 	}
 	if len(password) < 6 {
-		return nil, false, errors.New("密码长度至少 6 位")
+		return nil, errors.New("密码长度至少 6 位")
 	}
 	if username == AnonUsername {
-		return nil, false, errors.New("该用户名已被占用")
+		return nil, errors.New("该用户名已被占用")
+	}
+	if _, err := s.getUserByUsername(username); err == nil {
+		return nil, errors.New("该用户名已被占用")
+	} else if err != ErrUserNotFound {
+		return nil, err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	uid := newID()
+	if _, err := s.exec(tx, `INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
+		uid, username, hash, displayName, now()); err != nil {
+		return nil, err
+	}
+	if err := s.grantRoleTx(tx, uid, role); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	u, err := s.getUserByID(uid)
+	if err != nil {
+		return nil, err
+	}
+	return s.toUser(u)
+}
+
+// Register 注册新用户。系统尚无任何真实用户时，首位注册者自动获得 admin 角色（部署引导）。
+// 返回 (user, 是否为首位 admin)。是否开放注册由 HTTP 层按系统设置把关。
+func (s *Store) Register(username, password, displayName string) (*User, bool, error) {
 	count, err := s.UserCount()
 	if err != nil {
 		return nil, false, err
@@ -254,28 +289,28 @@ func (s *Store) Register(username, password, displayName string) (*User, bool, e
 	if first {
 		role = roleTableAdmin
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback()
-	uid := newID()
-	if _, err := s.exec(tx, `INSERT INTO users (id,username,password_hash,display_name,disabled,created_at) VALUES (?,?,?,?,0,?)`,
-		uid, username, hash, displayName, now()); err != nil {
-		return nil, false, err
-	}
-	if err := s.grantRoleTx(tx, uid, role); err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	u, err := s.getUserByID(uid)
-	if err != nil {
-		return nil, false, err
-	}
-	user, err := s.toUser(u)
+	user, err := s.CreateUser(username, password, displayName, role)
 	return user, first, err
+}
+
+// SetUserPassword 管理员重置指定用户密码（无需旧密码）。内置 anonymous 不可动。
+func (s *Store) SetUserPassword(userID, newPassword string) error {
+	u, err := s.getUserByID(userID)
+	if err != nil {
+		return err // 含 ErrUserNotFound
+	}
+	if u.Username == AnonUsername {
+		return errors.New("内置匿名账号不可修改")
+	}
+	if len(newPassword) < 6 {
+		return errors.New("密码长度至少 6 位")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.exec(s.db, `UPDATE users SET password_hash=? WHERE id=?`, string(hash), userID)
+	return err
 }
 
 // VerifyPassword 校验登录：返回 (user, ok)。disabled 或密码错 → ok=false（不泄露具体原因）。
@@ -480,6 +515,29 @@ func (s *Store) DeleteSession(token string) error {
 // ---- 系统设置 ----
 
 const SettingPublicMode = "public_mode"
+
+// 注册开关（settings 表 key=open_registration，取值 "1"/"0"）。
+// 注意：刻意不写入 Seed —— Seed 每次启动执行，若在其中设默认值会覆盖管理员的关闭决定
+// （公开度 public_mode 即因 Seed 写入而在每次重启时回落默认值，注册开关不能重蹈覆辙）。
+const SettingOpenRegistration = "open_registration"
+
+// RegistrationOpen 当前是否开放自助注册。无记录（默认/老库）→ 开放，保持既有行为。
+func (s *Store) RegistrationOpen() (bool, error) {
+	v, err := s.GetSetting(SettingOpenRegistration)
+	if err != nil {
+		return false, err
+	}
+	return v != "0", nil
+}
+
+// SetOpenRegistration 开关自助注册。关闭后注册页 403（HTTP 层把关）；管理员代建不受影响。
+func (s *Store) SetOpenRegistration(open bool) error {
+	v := "0"
+	if open {
+		v = "1"
+	}
+	return s.SetSetting(SettingOpenRegistration, v)
+}
 
 // PublicMode 返回当前公开度模式（非法值或缺失回退默认 private）。
 func (s *Store) PublicMode() (string, error) {

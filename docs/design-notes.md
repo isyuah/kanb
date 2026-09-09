@@ -48,14 +48,15 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
 | 创建/编辑任务、认领、报进度、设依赖 | ✗ | ✓ | ✓ |
 | 软删任务（回收站） | ✗ | ✓ | ✓ |
 | 彻底删除（回收站） | ✗ | 仅自己创建的 | ✓ |
-| 用户管理（角色/停用） | ✗ | ✗ | ✓ |
-| 系统设置（公开度） | ✗ | ✗ | ✓ |
+| 用户管理（代建/角色/停用/重置密码） | ✗ | ✗ | ✓ |
+| 系统设置（公开度/注册开关） | ✗ | ✗ | ✓ |
 
 - 会话：登录返回随机 token（crypto/rand 64 hex），存 `sessions` 表，30 天过期。
 - 密码：bcrypt 哈希存储，绝不明文；改密需验旧密码。
-- 保护：不能停用/降级自己、不能给最后一名 admin 降级（store 层校验）。
+- 保护：不能停用/降级/重置密码自己（改自己密码请走个人中心，需验旧密码）；不能给最后一名 admin 降级（store/handler 层校验）。
+- 注册开关（settings 表 `open_registration`，默认开放，见 §5）：关闭后登录页无注册入口、`POST /api/auth/register` 403（空库仍放行，保证首个 admin 引导）；管理员经 `POST /api/users` 代建账号（可设初始密码）成为注册关闭时的唯一加人通道。
 
-## 5. 公开度模式（系统设置，settings 表）
+## 5. 公开度模式与注册开关（系统设置，settings 表）
 
 | publicMode | 匿名（未登录）访问 |
 |---|---|
@@ -65,6 +66,12 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
 
 - 设计意图：private 适合内部团队（默认）；open 提供免登录即用的轻量入口，适用于公开演示/临时协作；readonly 介于两者之间。
 - 匿名回落账号是 `users` 表预置隐藏行，保证 `activities/claims` 的 user_id 外键恒有值。
+
+### 注册开关（open_registration）
+
+- 无记录即开放（老库默认行为不变）；`RegistrationOpen()` 把任何非 `"0"` 值当开放。
+- 刻意**不写入 Seed**：Seed 每次启动都会执行且 upsert 覆写（public_mode 因此在每次重启回落默认值），若把注册默认值放进 Seed，管理员关掉的注册会在重启后静默重开——注册开关属于安全边界，不能重蹈覆辙。
+- 开关只在 HTTP 层把关（`handleRegister`），store 层 `Register` 不受限：注册/引导单测与 MCP 内建账号逻辑不受开关影响。
 
 ## 6. 任务生命周期：回收站 / 归档 / 废弃
 
@@ -98,8 +105,10 @@ SQLite 单文件库（12 表，3NF，PRAGMA foreign_keys=ON）
   - `TestSoftDeleteTrash`：软删→回收站→恢复→彻底删除生命周期
   - `TestStatsAbandonedSeparate`：废弃单列计数、不进活跃口径/逾期/ByStatus
   - `TestMigrateTasksStatusCheckRebuild`：旧库启动自动重建、数据保留、幂等
+  - `TestAdminCreateUser` / `TestSetUserPassword`：管理员代建（角色/初始密码/重名/保留名）与重置密码（新旧密码验证、内置账号保护）
+  - `TestOpenRegistrationSetting`：注册开关默认开放、开关持久化、store 层不受限（HTTP 层把关）
 - API 集成冒烟：52 项断言（注册/登录/角色矩阵/公开度三态/回收站/级联/me），与本仓库联调流程同期维护。
-- API 契约单测：`TestAbandonedStatusAPI`（废弃 PATCH 生效 + 非法状态 400 + 统计口径）。
+- API 契约单测：`TestAbandonedStatusAPI`（废弃 PATCH 生效 + 非法状态 400 + 统计口径）；`TestAdminCreateUserEndpoint` / `TestResetPasswordEndpoint` / `TestRegistrationToggleEndpoint`（代建 201/重名 400、重置后新旧密码、注册开关 403 与恢复、越权 403）。
 - 演示数据：`scripts/seed-demo.mjs` 生成一套完整业务场景（三角色用户 + 任务/认领/进度/依赖链），供验收演示与手工验证使用。
 - 浏览器端到端：登录门→注册首用户 admin→建任务/认领/进度→日历/回收站/用户管理/系统设置/个人中心逐页人工验证。
 

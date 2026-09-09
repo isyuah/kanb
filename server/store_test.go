@@ -402,6 +402,119 @@ func TestPasswordMinLength(t *testing.T) {
 	}
 }
 
+// TestAdminCreateUser 管理员代建账号契约：默认 member、可指定角色、密码可用、
+// 重名/短密码/非法角色/保留用户名均被拒。
+func TestAdminCreateUser(t *testing.T) {
+	s := newTestStore(t)
+	reg(t, s, "admin1") // 首位注册为 admin，保证库非空
+
+	// 默认 member + 初始密码可登录
+	u, err := s.CreateUser("carol", "carol1234", "Carol", roleTableMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Role != roleTableMember {
+		t.Fatalf("role=%s, want member", u.Role)
+	}
+	if _, ok, err := s.VerifyPassword("carol", "carol1234"); err != nil || !ok {
+		t.Fatalf("初始密码应可登录: ok=%v err=%v", ok, err)
+	}
+
+	// 指定角色 viewer
+	vu, err := s.CreateUser("vic", "vicpass1", "Vic", roleTableViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vu.Role != roleTableViewer {
+		t.Fatalf("role=%s, want viewer", vu.Role)
+	}
+
+	// 非法角色
+	if _, err := s.CreateUser("x1", "x1pass1", "X", "superuser"); err == nil {
+		t.Fatal("非法角色应被拒")
+	}
+	// 短密码
+	if _, err := s.CreateUser("x2", "123", "X", roleTableMember); err == nil {
+		t.Fatal("短密码应被拒")
+	}
+	// 重名（含内置 anonymous 保留名）
+	if _, err := s.CreateUser("carol", "newpass1", "Carol2", roleTableMember); err == nil || err.Error() != "该用户名已被占用" {
+		t.Fatalf("重名应报占用: %v", err)
+	}
+	if _, err := s.CreateUser(AnonUsername, "anonpass1", "匿名", roleTableMember); err == nil {
+		t.Fatal("anonymous 保留名应被拒")
+	}
+}
+
+// TestSetUserPassword 管理员重置密码：新密码立即可登录、旧密码失效、≥6 位校验、
+// 未知用户 ErrUserNotFound、内置 anonymous 拒改。
+func TestSetUserPassword(t *testing.T) {
+	s := newTestStore(t)
+	alice := reg(t, s, "alice") // alicepass1
+
+	if err := s.SetUserPassword(alice.ID, "resetpass9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.VerifyPassword("alice", "alicepass1"); err != nil || ok {
+		t.Fatalf("旧密码应失效: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := s.VerifyPassword("alice", "resetpass9"); err != nil || !ok {
+		t.Fatalf("新密码应可登录: ok=%v err=%v", ok, err)
+	}
+	if err := s.SetUserPassword(alice.ID, "123"); err == nil {
+		t.Fatal("短密码应被拒")
+	}
+	if err := s.SetUserPassword("no-such-id", "abc12345"); err != ErrUserNotFound {
+		t.Fatalf("未知用户应 ErrUserNotFound: %v", err)
+	}
+	anonID, err := s.AnonymousID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anonID == "" {
+		t.Skip("无 anonymous 账号，跳过内置保护检查")
+	}
+	if err := s.SetUserPassword(anonID, "hack1234"); err == nil {
+		t.Fatal("内置 anonymous 密码不可被重置")
+	}
+}
+
+// TestOpenRegistrationSetting 注册开关：默认开放（老库无记录）；可关闭/重开并持久化；
+// 该开关只作用于 HTTP 注册入口——store.Register 本身不受限（注册/引导仍在 store 层跑）。
+func TestOpenRegistrationSetting(t *testing.T) {
+	s := newTestStore(t)
+	open, err := s.RegistrationOpen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !open {
+		t.Fatal("无记录时默认应开放注册")
+	}
+	if err := s.SetOpenRegistration(false); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := s.RegistrationOpen(); err != nil || open {
+		t.Fatalf("关闭后应为 false: open=%v err=%v", open, err)
+	}
+	// 持久化：重新读 setting 键（模拟重启后不回退）
+	if v, err := s.GetSetting(SettingOpenRegistration); err != nil || v != "0" {
+		t.Fatalf("setting 值应为 0: %q err=%v", v, err)
+	}
+	if err := s.SetOpenRegistration(true); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := s.RegistrationOpen(); !open {
+		t.Fatal("重新开放后应为 true")
+	}
+	// 关闭时 store 层仍允许建号（HTTP 层把关）——注册/引导测试不受开关影响
+	if err := s.SetOpenRegistration(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Register("bootstrap", "bpass123", "引导"); err != nil {
+		t.Fatalf("store.Register 不应受注册开关影响: %v", err)
+	}
+}
+
 // TestCommentLifecycle 评论：发表顶层+回复 → 归属校验 → 删父级联回复 → 删任务级联清评论。
 func TestCommentLifecycle(t *testing.T) {
 	s := newTestStore(t)

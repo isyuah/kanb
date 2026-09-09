@@ -107,7 +107,9 @@ export const api = {
 
   /* ---------------- 用户管理（admin） ---------------- */
   listUsers: () => request<User[]>('/users'),
-  /** 后端无 POST/PATCH /api/users —— 仅提供角色/停用管理。创建用户由注册页自助完成 */
+  /** 管理员代建账号（注册关闭时的加人通道）；初始密码由管理员设定 */
+  createUser: (input: { username: string; password: string; displayName?: string; role?: string }) =>
+    request<User>('/users', { method: 'POST', body: JSON.stringify(input) }),
   setUserRole: (id: string, role: string) =>
     request<void>(`/users/${id}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
   setUserDisabled: (id: string, disabled: boolean) =>
@@ -115,11 +117,22 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ disabled }),
     }),
+  /** 管理员重置指定用户密码（自定义新密码；不能重置自己） */
+  resetUserPassword: (id: string, password: string) =>
+    request<void>(`/users/${id}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    }),
 
   /* ---------------- 系统设置 ---------------- */
   getSettings: () => request<Settings>('/settings'),
   updateSettings: (patch: { publicMode: string }) =>
     request<Settings>('/settings/public-mode', { method: 'PUT', body: JSON.stringify(patch) }),
+  updateRegistration: (registration: boolean) =>
+    request<{ registration: boolean }>('/settings/registration', {
+      method: 'PUT',
+      body: JSON.stringify({ registration }),
+    }),
 
   /* ---------------- 任务 ---------------- */
   listTasks: (includeArchived = false) =>

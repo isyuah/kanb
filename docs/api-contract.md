@@ -7,6 +7,7 @@
 - `POST /api/auth/register` body `{ username, password, displayName? }` → `201 { token, user }`
   - 首个注册用户自动为 admin，其余默认 member。
   - username 唯一；password 长度 ≥ 6（后端校验，错误 400）。
+  - 系统设置关闭自助注册（registration=false）且库中已有用户时 → `403 { error: "注册已关闭…" }`（库空时仍放行，保证部署引导）。
 - `POST /api/auth/login` body `{ username, password }` → `200 { token, user }`
 - `POST /api/auth/logout` header `Authorization: Bearer <token>` → `204`（删会话）
 - user 结构：`{ id, username, displayName, role, disabled, createdAt }`
@@ -14,7 +15,7 @@
 
 ## 公开度（匿名访问）
 
-- `GET /api/settings` → `200 { publicMode }`，publicMode ∈ `private | readonly | open`（默认 private）
+- `GET /api/settings` → `200 { publicMode, registration }`，publicMode ∈ `private | readonly | open`（默认 private）；registration 为是否开放自助注册（登录页据此决定显示注册入口）
 - 匿名（无 token）：
   - private：除 `/api/auth/register|login`、`GET /api/settings` 外一律 `401`
   - readonly：可 `GET`（tasks/activities/…），写操作 `401`
@@ -35,7 +36,10 @@
 
 - `GET /api/users` → `[{ id, username, displayName, role, disabled, createdAt }]`
 - `GET /api/me` → 当前登录 user；`PUT /api/me` body `{ displayName?, password? }` → `200 user`（个人中心改自己）
-- 用户创建走 `POST /api/auth/register`（默认 member；首个注册为 admin）
+- `POST /api/users` body `{ username, password, displayName?, role? }`（admin，代建账号）→ `201 user`
+  - 注册关闭时的加人通道；role 缺省 member，可指定 admin/member/viewer；password 长度 ≥ 6；不返回 token。
+- `PUT /api/users/{id}/password` body `{ password }`（admin，重置密码）→ `204`
+  - 自定义新密码直接生效（无需旧密码）；不允许重置自己（请走个人中心）；password 长度 ≥ 6。
 - `PUT /api/users/{id}/role` body `{ role }`（admin，改角色）
 - `PUT /api/users/{id}/disabled` body `{ disabled }`（admin，停用/启用）
   - 不允许停用/改自己；不允许给最后一名 admin 降级/停用（后端校验）。
@@ -101,8 +105,10 @@
 
 ## 系统设置（admin）
 
-- `GET /api/settings` → `{ publicMode, auth }`（公开，登录页据此决定显示登录门）
+- `GET /api/settings` → `{ publicMode, registration, auth }`（公开，登录页据此决定显示登录门/注册入口）
 - `PUT /api/settings/public-mode` body `{ publicMode }` → `200 { publicMode }`（admin）
+- `PUT /api/settings/registration` body `{ registration: bool }` → `200 { registration }`（admin）
+  - 关闭后 `POST /api/auth/register` 403（库空引导场景除外）；管理员 `POST /api/users` 代建不受影响。
 
 ## AI 使用指南（公开）
 

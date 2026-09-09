@@ -285,6 +285,7 @@ func (a *app) routes() http.Handler {
 	// ===== 系统设置（GET 完全公开——登录/注册页也需要；写需 admin）=====
 	mux.HandleFunc("GET /api/settings", a.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings/public-mode", a.requireRole(RoleAdmin, a.handlePutPublicMode))
+	mux.HandleFunc("PUT /api/settings/registration", a.requireRole(RoleAdmin, a.handlePutRegistration))
 
 	// ===== 公开使用指南（内嵌 guide.md，供 MCP 双通道拉取）=====
 	mux.HandleFunc("GET /api/guide", a.handleGuide)
@@ -295,8 +296,10 @@ func (a *app) routes() http.Handler {
 
 	// ===== 用户管理（admin）=====
 	mux.HandleFunc("GET /api/users", a.requireRole(RoleAdmin, a.handleListUsers))
+	mux.HandleFunc("POST /api/users", a.requireRole(RoleAdmin, a.handleCreateUser))
 	mux.HandleFunc("PUT /api/users/{id}/role", a.requireRole(RoleAdmin, a.handleSetUserRole))
 	mux.HandleFunc("PUT /api/users/{id}/disabled", a.requireRole(RoleAdmin, a.handleSetUserDisabled))
+	mux.HandleFunc("PUT /api/users/{id}/password", a.requireRole(RoleAdmin, a.handleSetUserPassword))
 
 	// ===== 任务 =====
 	mux.HandleFunc("GET /api/tasks", a.gateRead(a.handleListTasks))
@@ -352,6 +355,25 @@ func (a *app) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if in.DisplayName == "" {
 		in.DisplayName = in.Username
 	}
+	// 开放注册开关（系统设置）：关闭后自助注册 403。
+	// 保底：库中尚无任何真实用户时仍放行（部署引导——首位注册者自动成为 admin，
+	// 且「关闭注册」本身必须由一名已存在的管理员操作，不可能出现于空库）。
+	open, err := a.store.RegistrationOpen()
+	if err != nil {
+		a.writeErr(w, 500, "读取设置失败")
+		return
+	}
+	if !open {
+		n, err := a.store.UserCount()
+		if err != nil {
+			a.writeErr(w, 500, "读取设置失败")
+			return
+		}
+		if n > 0 {
+			a.writeErr(w, 403, "注册已关闭，请联系管理员创建账号")
+			return
+		}
+	}
 	user, first, err := a.store.Register(in.Username, in.Password, in.DisplayName)
 	if err != nil {
 		a.writeErr(w, 400, err.Error())
@@ -404,8 +426,14 @@ func (a *app) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		a.writeErr(w, 500, "读取设置失败")
 		return
 	}
+	open, err := a.store.RegistrationOpen()
+	if err != nil {
+		a.writeErr(w, 500, "读取设置失败")
+		return
+	}
 	a.writeJSON(w, 200, map[string]any{
-		"publicMode": mode,
+		"publicMode":   mode,
+		"registration": open,
 		"auth": map[string]any{
 			"enabled":     true,
 			"anonymous":   currentUser(r) == nil,
@@ -440,6 +468,25 @@ func (a *app) handlePutPublicMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, 200, map[string]any{"publicMode": in.Mode})
+}
+
+func (a *app) handlePutRegistration(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Registration *bool `json:"registration"` // 指针区分缺省与显式 false
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		a.writeErr(w, 400, "请求体解析失败")
+		return
+	}
+	if in.Registration == nil {
+		a.writeErr(w, 400, "缺少 registration 字段")
+		return
+	}
+	if err := a.store.SetOpenRegistration(*in.Registration); err != nil {
+		a.writeErr(w, 500, "保存设置失败")
+		return
+	}
+	a.writeJSON(w, 200, map[string]any{"registration": *in.Registration})
 }
 
 // ---- 个人中心 handlers ----
@@ -536,6 +583,56 @@ func (a *app) handleSetUserDisabled(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.store.SetUserDisabled(id, in.Disabled); err != nil {
 		a.writeErr(w, 500, "操作失败")
+		return
+	}
+	a.writeNoContent(w)
+}
+
+// handleCreateUser 管理员代建账号（注册关闭时的唯一加人通道）。
+// 与自助注册同名同规则，但角色由管理员指定（缺省 member），不返回会话 token。
+func (a *app) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"displayName"`
+		Role        string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		a.writeErr(w, 400, "请求体解析失败")
+		return
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if in.DisplayName == "" {
+		in.DisplayName = in.Username
+	}
+	if in.Role == "" {
+		in.Role = roleTableMember
+	}
+	user, err := a.store.CreateUser(in.Username, in.Password, in.DisplayName, in.Role)
+	if err != nil {
+		a.writeErr(w, 400, err.Error())
+		return
+	}
+	a.writeJSON(w, 201, user)
+}
+
+// handleSetUserPassword 管理员重置指定用户密码（自定义新密码）。
+// 自己的密码请走个人中心（需验旧密码）；这里防止误改自己。
+func (a *app) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var in struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		a.writeErr(w, 400, "请求体解析失败")
+		return
+	}
+	if me := currentUser(r); me.ID == id {
+		a.writeErr(w, 400, "不能重置自己的密码：请到个人中心修改")
+		return
+	}
+	if err := a.store.SetUserPassword(id, in.Password); err != nil {
+		a.writeErr(w, 400, err.Error())
 		return
 	}
 	a.writeNoContent(w)

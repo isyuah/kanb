@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
-import { App, Button, Card, Radio, Space, Typography } from 'antd'
-import { GlobalOutlined } from '@ant-design/icons'
+import { App, Button, Card, Divider, Radio, Space, Switch, Typography } from 'antd'
+import { GlobalOutlined, UserAddOutlined } from '@ant-design/icons'
 import { api } from '../api'
 import type { PublicMode } from '../types'
 import { PUBLIC_MODE_DESC, PUBLIC_MODE_LABELS } from '../types'
 
 const { Text, Title, Paragraph } = Typography
 
-/** 系统设置：公开度控制（admin） */
+/** 系统设置：公开度 + 开放注册（admin） */
 export default function SettingsPage() {
   const { message } = App.useApp()
   const [mode, setMode] = useState<PublicMode>('private')
+  const [registration, setRegistration] = useState(true)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -19,6 +20,7 @@ export default function SettingsPage() {
       .getSettings()
       .then((s) => {
         setMode(s.publicMode)
+        setRegistration(s.registration)
         setLoaded(true)
       })
       .catch((e) => message.error((e as Error).message))
@@ -29,7 +31,10 @@ export default function SettingsPage() {
     try {
       const s = await api.updateSettings({ publicMode: mode })
       setMode(s.publicMode)
-      message.success('已保存：站点当前为' + PUBLIC_MODE_LABELS[s.publicMode])
+      await api.updateRegistration(registration)
+      message.success(
+        `已保存：站点为「${PUBLIC_MODE_LABELS[mode]}」，${registration ? '开放自助注册' : '已关闭自助注册'}`,
+      )
     } catch (e) {
       message.error((e as Error).message)
     } finally {
@@ -42,7 +47,10 @@ export default function SettingsPage() {
       <Title level={4} style={{ marginTop: 0 }}>
         系统设置
       </Title>
-      <Paragraph type="secondary">控制未登录访客的访问级别；已登录用户按角色权限操作，不受此限制。</Paragraph>
+      <Paragraph type="secondary">
+        公开度控制未登录访客的访问级别，已登录用户按角色权限操作、不受此限制；
+        开放注册控制是否允许任何人在登录页自助注册账号。
+      </Paragraph>
 
       <Card loading={!loaded} style={{ marginTop: 12 }}>
         <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -89,6 +97,28 @@ export default function SettingsPage() {
               </div>
             ))}
           </Radio.Group>
+
+          <Divider style={{ margin: '4px 0' }} />
+
+          <Space size={12} style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space direction="vertical" size={2}>
+              <Space size={12}>
+                <UserAddOutlined style={{ fontSize: 20, color: '#4f6ef7' }} />
+                <Text strong style={{ fontSize: 15 }}>
+                  开放自助注册
+                </Text>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 13, display: 'block', marginLeft: 32 }}>
+                关闭后登录页不提供注册入口，新成员由管理员在「用户管理」中创建账号
+              </Text>
+            </Space>
+            <Switch
+              checked={registration}
+              onChange={setRegistration}
+              checkedChildren="开放"
+              unCheckedChildren="关闭"
+            />
+          </Space>
 
           <Button type="primary" onClick={() => void save()} loading={saving} disabled={!loaded}>
             保存设置

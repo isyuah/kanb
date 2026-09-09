@@ -101,6 +101,8 @@ export interface Activity {
 
 export interface Settings {
   publicMode: PublicMode
+  /** 是否开放自助注册（登录页注册入口 + POST /auth/register） */
+  registration: boolean
 }
 
 /* ---------------- 统计 ---------------- */

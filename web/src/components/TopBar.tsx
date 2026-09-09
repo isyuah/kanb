@@ -34,6 +34,7 @@ export default function TopBar() {
   const logout = useKanban((s) => s.logout)
   const tasks = useKanban((s) => s.tasks)
   const publicMode = useKanban((s) => s.publicMode)
+  const registration = useKanban((s) => s.registration)
   const { writable } = usePerms()
   const view = useUI((s) => s.view)
   const setView = useUI((s) => s.setView)
@@ -203,7 +204,7 @@ export default function TopBar() {
       ) : (
         <>
           <Button icon={<UserOutlined />} onClick={() => setLoginOpen(true)}>
-            登录 / 注册
+            {registration === false ? '登 录' : '登录 / 注册'}
           </Button>
           {publicMode === 'readonly' || publicMode === 'open' ? (
             <Button onClick={() => setView('board')}>游客浏览</Button>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { App, Button, Form, Input, Segmented, Typography } from 'antd'
 import { LockOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons'
 import { api } from '../api'
@@ -18,17 +18,37 @@ export default function LoginForm() {
   const setView = useUI((s) => s.setView)
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [loading, setLoading] = useState(false)
+  // 开放注册开关（系统设置）：null=未知（拉取失败按开放处理，后端会兜底拒绝）
+  const [regOpen, setRegOpen] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    api
+      .getSettings()
+      .then((s) => {
+        if (alive) setRegOpen(s.registration)
+      })
+      .catch(() => {
+        /* 后端未就绪：不阻塞登录，保持可注册外观 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 注册已关闭时强制落在登录态（注册分支 UI 整体不渲染）
+  const effMode: 'login' | 'register' = regOpen === false ? 'login' : mode
 
   const submit = async (v: { username: string; password: string; displayName?: string }) => {
     setLoading(true)
     try {
       const r =
-        mode === 'login'
+        effMode === 'login'
           ? await api.login(v.username, v.password)
           : await api.register(v.username, v.password, v.displayName)
       applyAuth(r)
       setView('board')
-      message.success(mode === 'login' ? '登录成功' : '注册成功')
+      message.success(effMode === 'login' ? '登录成功' : '注册成功')
     } catch (e) {
       message.error((e as Error).message)
     } finally {
@@ -44,16 +64,18 @@ export default function LoginForm() {
         </Title>
         <Text type="secondary">团队任务看板</Text>
       </div>
-      <Segmented
-        block
-        value={mode}
-        onChange={(v) => setMode(v as 'login' | 'register')}
-        options={[
-          { value: 'login', label: '登录' },
-          { value: 'register', label: '注册' },
-        ]}
-        style={{ margin: '12px 0 16px' }}
-      />
+      {regOpen !== false && (
+        <Segmented
+          block
+          value={mode}
+          onChange={(v) => setMode(v as 'login' | 'register')}
+          options={[
+            { value: 'login', label: '登录' },
+            { value: 'register', label: '注册' },
+          ]}
+          style={{ margin: '12px 0 16px' }}
+        />
+      )}
       <Form layout="vertical" onFinish={submit} requiredMark={false}>
         <Form.Item
           name="username"
@@ -67,7 +89,7 @@ export default function LoginForm() {
             autoComplete="username"
           />
         </Form.Item>
-        {mode === 'register' && (
+        {effMode === 'register' && (
           <Form.Item name="displayName" style={{ marginBottom: 12 }}>
             <Input
               prefix={<SafetyOutlined style={{ color: 'rgba(31,36,48,0.35)' }} />}
@@ -79,7 +101,7 @@ export default function LoginForm() {
         <Form.Item
           name="password"
           rules={
-            mode === 'register'
+            effMode === 'register'
               ? [{ required: true, message: '请输入密码' }, { min: 6, message: '密码至少 6 位' }]
               : [{ required: true, message: '请输入密码' }]
           }
@@ -88,20 +110,25 @@ export default function LoginForm() {
           <Input.Password
             prefix={<LockOutlined style={{ color: 'rgba(31,36,48,0.35)' }} />}
             placeholder="密码（至少 6 位）"
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            autoComplete={effMode === 'login' ? 'current-password' : 'new-password'}
           />
         </Form.Item>
-        {mode === 'register' && (
+        {effMode === 'register' && (
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
             第一个注册的用户将自动成为管理员。
           </Text>
         )}
         <Form.Item style={{ marginBottom: 0 }}>
           <Button type="primary" htmlType="submit" block loading={loading} style={{ marginTop: 4 }}>
-            {mode === 'login' ? '登 录' : '注 册'}
+            {effMode === 'login' ? '登 录' : '注 册'}
           </Button>
         </Form.Item>
       </Form>
+      {regOpen === false && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', textAlign: 'center', marginTop: 12 }}>
+          注册已关闭，如需账号请联系管理员。
+        </Text>
+      )}
     </div>
   )
 }

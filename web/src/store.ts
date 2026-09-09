@@ -59,6 +59,8 @@ interface KanbanState {
   error: string | null
   /** 已拉取的公开度；null = 未知（如后端未就绪） */
   publicMode: PublicMode | null
+  /** 已拉取的开放注册开关；null = 未知（按开放显示，后端兜底拒绝） */
+  registration: boolean | null
 
   /** 登录/注册成功：保存 user + token */
   applyAuth: (r: AuthResult) => void
@@ -111,7 +113,7 @@ export const useKanban = create<KanbanState>((set, get) => {
   const refreshFromServer = async () => {
     try {
       const s = await api.getSettings()
-      set({ publicMode: s.publicMode })
+      set({ publicMode: s.publicMode, registration: s.registration })
     } catch {
       /* settings 拉取失败：保持原公开度 */
     }
@@ -153,6 +155,7 @@ export const useKanban = create<KanbanState>((set, get) => {
     loaded: false,
     error: null,
     publicMode: null,
+    registration: null,
 
     applyAuth: (r) => {
       saveUser(r.user)
